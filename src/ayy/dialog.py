@@ -4,7 +4,17 @@ from itertools import groupby
 from operator import itemgetter
 from typing import Any
 
+from burr.core import ApplicationBuilder, action
+from burr.integrations.pydantic import PydanticTypingSystem
+from pydantic import BaseModel, Field
+
 MessageType = dict[str, Any]
+
+
+class Dialog(BaseModel):
+    system: str
+    messages: list[MessageType] = Field(default_factory=list)
+    aween: str = "lalala"
 
 
 class ModelName(StrEnum):
@@ -98,3 +108,36 @@ def messages_to_kwargs(
     if "gpt" not in model_name.lower():
         kwargs["messages"] = merge_same_role_messages(messages=messages, joiner=joiner)
     return kwargs
+
+
+@action.pydantic(reads=["system", "messages"], writes=["messages"])
+def respond(state: Dialog) -> Dialog:
+    state.messages.append(assistant_message(content=f"whaaattt: {state.system}\n+++++\n{state.messages}\n+++++\n"))
+    return state
+
+
+@action.pydantic(reads=[], writes=["messages"])
+def get_query(state: Dialog, query: str, template: str = "") -> Dialog:
+    state.messages.append(user_message(content=query, template=template))
+    return state
+
+
+@action.pydantic(reads=["system", "messages", "aween"], writes=[])
+def printer(state: Dialog) -> Dialog:
+    print(state.system)
+    print(state.messages)
+    print(state.aween)
+    return state
+
+
+app = (
+    ApplicationBuilder()
+    .with_actions(get_query.bind(query="Hamza"), printer, respond)  # type:ignore
+    .with_typing(PydanticTypingSystem(Dialog))
+    .with_state(Dialog(system="ye kesay"))
+    .with_entrypoint("get_query")
+    .with_transitions(("get_query", "respond"), ("respond", "printer"))
+    .build()
+)
+action_ran, result, state = app.run(halt_after=["printer"])
+# print(state)
