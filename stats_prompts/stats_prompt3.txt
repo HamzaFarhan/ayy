@@ -1,0 +1,18 @@
+Create a hypothesis testing problem following these guidelines:
+- Choose a real-world scenario:
+  * Manufacturing process
+  * Customer service metrics
+  * Medical treatment effects
+  * Environmental measurements
+- Generate {30-40} sample data points
+- Data should be:
+  * Normally distributed
+  * Have slight variation from claimed value
+  * Include decimals to one place
+- Include these components:
+  1. Hypothesis formulation
+  2. Statistical test at specific significance level
+  3. P-value calculation and interpretation
+  4. Real-world interpretation of errors
+- Claimed value should be a round number
+- Sample data should suggest a borderline significant/non-significant result

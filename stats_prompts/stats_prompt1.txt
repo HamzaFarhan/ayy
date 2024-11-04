@@ -1,0 +1,11 @@
+Generate a descriptive statistics problem using these parameters:
+- Create a dataset of {20-30} test scores between 60-100
+- Scores should follow an approximately normal distribution
+- Include whole numbers only
+- Ask students to:
+  1. Calculate central tendency measures (mean, median, mode)
+  2. Calculate dispersion measures (standard deviation)
+  3. Create and interpret a visual representation
+  4. Analyze distribution characteristics
+- Context should be academic performance, athletic records, or scientific measurements
+- Include a plausible real-world scenario

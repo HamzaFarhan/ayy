@@ -1,20 +1,19 @@
+import json
+from copy import deepcopy
 from enum import StrEnum
 from functools import partial
 from itertools import groupby
 from operator import itemgetter
-from typing import Any
+from pathlib import Path
+from typing import Annotated, Any
 
+import instructor
 from burr.core import ApplicationBuilder, action
 from burr.integrations.pydantic import PydanticTypingSystem
-from pydantic import BaseModel, Field
-
-MessageType = dict[str, Any]
-
-
-class Dialog(BaseModel):
-    system: str
-    messages: list[MessageType] = Field(default_factory=list)
-    aween: str = "lalala"
+from burr.tracking import LocalTrackingClient
+from google.generativeai import GenerativeModel
+from loguru import logger
+from pydantic import AfterValidator, BaseModel, Field
 
 
 class ModelName(StrEnum):
@@ -28,12 +27,28 @@ class ModelName(StrEnum):
     GEMINI_FLASH_EXP = "gemini-1.5-flash-exp-0827"
 
 
+MessageType = dict[str, Any]
+
 TRIMMED_LEN = 40
 MERGE_JOINER = "\n\n--- Next Message ---\n\n"
 MODEL = ModelName.GEMINI_FLASH
 
 
-def chat_message(role: str, content: Any, template: str = "") -> MessageType:
+def load_content(content: Any) -> Any:
+    if not isinstance(content, (str, Path)):
+        return content
+    else:
+        try:
+            return Path(content).read_text()
+        except Exception as e:
+            logger.warning(f"Could not load content as a file: {str(e)[:100]}")
+            return str(content)
+
+
+Content = Annotated[Any, AfterValidator(load_content)]
+
+
+def chat_message(role: str, content: Content, template: Content = "") -> MessageType:
     if template:
         if not isinstance(content, dict):
             raise TypeError("When using template, content must be a dict.")
@@ -46,25 +61,39 @@ def chat_message(role: str, content: Any, template: str = "") -> MessageType:
     return {"role": role, "content": message_content}
 
 
-def system_message(content: Any, template: str = "") -> MessageType:
+def system_message(content: Content, template: Content = "") -> MessageType:
     return chat_message(role="system", content=content, template=template)
 
 
-def user_message(content: Any, template: str = "") -> MessageType:
+def user_message(content: Content, template: Content = "") -> MessageType:
     return chat_message(role="user", content=content, template=template)
 
 
-def assistant_message(content: Any, template: str = "") -> MessageType:
+def assistant_message(content: Content, template: Content = "") -> MessageType:
     return chat_message(role="assistant", content=content, template=template)
 
 
+def load_messages(messages: list[MessageType] | str | Path) -> list[MessageType]:
+    if isinstance(messages, list):
+        return messages
+    else:
+        try:
+            return json.loads(Path(messages).read_text())
+        except Exception as e:
+            logger.warning(f"Could not load messages as a file: {str(e)[:100]}")
+            return [user_message(content=str(messages))]
+
+
+Messages = Annotated[list[MessageType], AfterValidator(load_messages)]
+
+
 def exchange(
-    user: Any,
-    assistant: Any,
-    feedback: Any = "",
-    correction: Any = "",
-    user_template: str = "",
-    assistant_template: str = "",
+    user: Content,
+    assistant: Content,
+    feedback: Content = "",
+    correction: Content = "",
+    user_template: Content = "",
+    assistant_template: Content = "",
 ) -> list[MessageType]:
     user_maker = partial(user_message, template=user_template)
     assistant_maker = partial(assistant_message, template=assistant_template)
@@ -75,7 +104,7 @@ def exchange(
     )
 
 
-def merge_same_role_messages(messages: list[MessageType], joiner: str = MERGE_JOINER) -> list[MessageType]:
+def merge_same_role_messages(messages: Messages, joiner: Content = MERGE_JOINER) -> list[MessageType]:
     return (
         [
             {"role": role, "content": joiner.join(msg["content"] for msg in group)}
@@ -86,7 +115,7 @@ def merge_same_role_messages(messages: list[MessageType], joiner: str = MERGE_JO
     )
 
 
-def trim_messages(messages: list[MessageType], trimmed_len: int = TRIMMED_LEN) -> list[MessageType]:
+def trim_messages(messages: Messages, trimmed_len: int = TRIMMED_LEN) -> list[MessageType]:
     if len(messages) <= trimmed_len:
         return messages
     for start_idx in range(len(messages) - trimmed_len, -1, -1):
@@ -99,45 +128,95 @@ def trim_messages(messages: list[MessageType], trimmed_len: int = TRIMMED_LEN) -
 
 
 def messages_to_kwargs(
-    messages: list[MessageType], model_name: ModelName = MODEL, defualt_task: str = "", joiner: str = MERGE_JOINER
-) -> dict[str, str | list[MessageType]]:
-    kwargs = {
-        "system": messages[0]["content"] if messages[0]["role"] == "system" else defualt_task,
-        "messages": messages,
-    }
-    if "gpt" not in model_name.lower():
-        kwargs["messages"] = merge_same_role_messages(messages=messages, joiner=joiner)
+    messages: Messages, system: str = "", model_name: str = MODEL, joiner: Content = MERGE_JOINER
+) -> dict:
+    kwargs = {"messages": deepcopy(messages)}
+    first_message = messages[0]
+    if first_message["role"] == "system":
+        system = system or first_message["content"]
+        kwargs["messages"][0]["content"] = system
+    else:
+        kwargs["messages"].insert(0, system_message(content=system))
+    if any(name in model_name.lower() for name in ("gemini", "claude")):
+        kwargs["messages"] = merge_same_role_messages(messages=kwargs["messages"], joiner=joiner)
+    if "claude" in model_name.lower():
+        return {"system": system, "messages": kwargs["messages"][1:]}
     return kwargs
 
 
-@action.pydantic(reads=["system", "messages"], writes=["messages"])
-def respond(state: Dialog) -> Dialog:
-    state.messages.append(assistant_message(content=f"whaaattt: {state.system}\n+++++\n{state.messages}\n+++++\n"))
+class Dialog(BaseModel):
+    system: Content
+    messages: Messages = Field(default_factory=list)
+    model_name: str = MODEL
+
+
+@action.pydantic(reads=["system", "messages", "model_name"], writes=["messages"])
+def add_assistant_message(state: Dialog, creator: Content) -> Dialog:
+    try:
+        res = (
+            creator(
+                **messages_to_kwargs(
+                    messages=deepcopy(state.messages), system=state.system, model_name=state.model_name
+                )
+            )
+            if callable(creator)
+            else creator
+        )
+    except Exception as e:
+        logger.exception(f"Error in respond. Last message: {state.messages[-1]}")
+        res = f"Error: {e}"
+    state.messages.append(assistant_message(content=res))
     return state
 
 
 @action.pydantic(reads=[], writes=["messages"])
-def get_query(state: Dialog, query: str, template: str = "") -> Dialog:
-    state.messages.append(user_message(content=query, template=template))
+def add_user_message(state: Dialog, content: Content, template: Content = "") -> Dialog:
+    state.messages.append(user_message(content=content, template=template))
     return state
 
 
-@action.pydantic(reads=["system", "messages", "aween"], writes=[])
-def printer(state: Dialog) -> Dialog:
-    print(state.system)
-    print(state.messages)
-    print(state.aween)
+@action(reads=[], writes=[])
+def say_hello(state: Dialog) -> Dialog:
+    logger.success("Hello!")
     return state
 
 
+creator = partial(
+    instructor.from_gemini(client=GenerativeModel(model_name=MODEL), mode=instructor.Mode.GEMINI_JSON).create,
+    response_model=str,
+)
+
+tracker = LocalTrackingClient(project="stats")
 app = (
     ApplicationBuilder()
-    .with_actions(get_query.bind(query="Hamza"), printer, respond)  # type:ignore
+    .with_actions(add_user_message.bind(template=""), add_assistant_message.bind(creator=creator))  # type:ignore
     .with_typing(PydanticTypingSystem(Dialog))
-    .with_state(Dialog(system="ye kesay"))
-    .with_entrypoint("get_query")
-    .with_transitions(("get_query", "respond"), ("respond", "printer"))
+    # .with_state(Dialog(system="../../stats_system.txt"))
+    # .with_entrypoint("add_user_message")
+    .with_transitions(("add_user_message", "add_assistant_message"), ("add_assistant_message", "add_user_message"))
+    .with_tracker(tracker=tracker)  # type:ignore
+    .with_identifiers(app_id="stats_3")
+    .initialize_from(
+        initializer=tracker,
+        resume_at_next_action=True,
+        default_state={
+            "system": load_content("../../stats_system.txt"),
+            "messages": load_messages("../../stats_start.json"),
+        },
+        default_entrypoint="add_user_message",
+        fork_from_app_id="stats_2",
+        fork_from_sequence_id=3,
+    )
     .build()
 )
-action_ran, result, state = app.run(halt_after=["printer"])
-# print(state)
+# logger.info(app.state)
+for prompt in Path("../../stats_prompts").glob("*.txt"):
+    while True:
+        step_result = app.step(inputs={"content": load_content(prompt)})
+        if step_result is None:
+            logger.error("app.step returned None")
+            break
+        action, result, state = step_result
+        logger.info(f"Action: {action.name}")
+        if action.name == "add_assistant_message":
+            break

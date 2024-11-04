@@ -1,0 +1,14 @@
+Generate a probability theory problem with these specifications:
+- Use one of these contexts:
+  * Drawing cards from a standard deck
+  * Selecting colored balls from an urn
+  * Rolling multiple dice
+  * Selecting students from a classroom
+- Include 3-4 subquestions that build in complexity
+- Questions should cover:
+  1. Simple probability
+  2. Conditional probability
+  3. Independent/dependent events
+- Provide clear numerical parameters
+- Ask for probability in both fraction and decimal form
+- Include a conceptual question about independence/dependence
