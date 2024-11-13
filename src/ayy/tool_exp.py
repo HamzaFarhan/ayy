@@ -135,14 +135,14 @@ for tool in plan:  # type:ignore
         messages.append(assistant_message(content=res))
     else:
         messages.append(user_message(content=tool.prompt))
-        logger.info(f"\n\nCalling Tool with messages: {messages}\n\n")
+        logger.info(f"\n\nCalling for {tool.name} with messages: {messages}\n\n")
         tool_args = creator(
             **messages_to_kwargs(messages=messages, model_name=MODEL),
             response_model=function_to_model(tools_dict[tool.name]),
         )
-        logger.info(f"Tool args: {tool_args}")
+        logger.info(f"{tool.name} args: {tool_args}")
         res = tools_dict[tool.name](**tool_args.model_dump())  # type:ignore
-        logger.success(f"Tool result: {res}")
+        logger.success(f"{tool.name} result: {res}")
         messages.append(assistant_message(content=res))
 
 if not any(x.name for x in plan if x.name not in ["ask_user", "call_ai"]):  # type:ignore
@@ -158,6 +158,5 @@ if not any(x.name for x in plan if x.name not in ["ask_user", "call_ai"]):  # ty
             logger.success(f"call_ai result: {res}")
             messages.append(assistant_message(content=res))
         seq += 1
-
 
 logger.success(f"Messages: {messages}")
