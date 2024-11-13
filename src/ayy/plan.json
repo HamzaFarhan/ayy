@@ -1,27 +1,12 @@
 [
   {
-    "chain_of_thought": "We need to know the location first to list available grounds.",
+    "chain_of_thought": "The user wants to buy a new mac. I need to know more information to help them. I will ask the user what kind of mac they want and their budget.",
     "name": "ask_user",
-    "prompt": "What is your location?"
+    "prompt": "What kind of Mac are you looking for (e.g., MacBook Air, MacBook Pro, iMac)? What is your budget?"
   },
   {
-    "chain_of_thought": "Now we know the location, we can list available grounds.",
-    "name": "list_available_grounds",
-    "prompt": "Based on the user's location, what are the available grounds?"
-  },
-  {
-    "chain_of_thought": "Before suggesting a ground, we need to make sure it's not raining on the day user wants to play. So let's ask the day.",
-    "name": "ask_user",
-    "prompt": "What day do you want to play?"
-  },
-  {
-    "chain_of_thought": "We know the day and location, we can check the weather now.",
-    "name": "get_weather",
-    "prompt": "What is the weather on the day the user wants to play at their location?"
-  },
-  {
-    "chain_of_thought": "Based on the weather and available grounds we can suggest if user can play or not.",
+    "chain_of_thought": "Now that I have the user's preferences and budget, I can provide them with some options. I will use the call_ai tool to generate a response.",
     "name": "call_ai",
-    "prompt": "Given the weather and available grounds, tell the user if they can play. If it's raining that day, let them know it's raining and you can't suggest a ground."
+    "prompt": "Based on the user's response to the previous prompt, provide them with some options for Macs that fit their needs and budget.  Include links to where they can purchase the Macs."
   }
 ]

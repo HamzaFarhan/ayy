@@ -1,0 +1,22 @@
+[
+  {
+    "chain_of_thought": "To find available football grounds, I first need to know the location.  Then I need to check the weather forecast for that day. If it's raining, I'll need to find an alternative day or location.",
+    "name": "ask_user",
+    "prompt": "Please tell me the city or area where you want to play football, and what day you'd like to play."
+  },
+  {
+    "chain_of_thought": "Now that I have the location and day, I can use the list_available_grounds tool to get a list of grounds. Then I'll use the get_weather tool to check the weather forecast for that day. If it's raining, I'll need to suggest an alternative.",
+    "name": "list_available_grounds",
+    "prompt": "List all available football grounds in {location}"
+  },
+  {
+    "chain_of_thought": "I have a list of grounds. Now I need to check the weather for the selected day.",
+    "name": "get_weather",
+    "prompt": "What is the weather forecast for {day} in {location}?"
+  },
+  {
+    "chain_of_thought": "Based on the weather and available grounds, I can now provide a response to the user.",
+    "name": "call_ai",
+    "prompt": "Based on the list of available grounds in {location} and the weather forecast for {day} in {location}, provide a response to the user about where they can play football.  If it's raining, suggest an alternative day or location."
+  }
+]
