@@ -1,14 +1,11 @@
 import inspect
-import textwrap
 import typing
 from functools import partial
 from typing import Callable
 
 from pydantic import BaseModel, create_model
 
-
-def deindent(text: str) -> str:
-    return textwrap.dedent(inspect.cleandoc(text))
+from ayy.utils import deindent
 
 
 def get_param_names(func: Callable):
@@ -28,13 +25,13 @@ def get_required_param_names(func: Callable) -> list[str]:
     return [name for name, param in params.items() if param.default == inspect.Parameter.empty]
 
 
-def function_schema(f: Callable) -> dict:
+def function_schema(func: Callable) -> dict:
     kw = {
         n: (o.annotation, ... if o.default == inspect.Parameter.empty else o.default)
-        for n, o in inspect.signature(f).parameters.items()
+        for n, o in inspect.signature(func).parameters.items()
     }
-    s = create_model(f"Input for `{f.__name__}`", **kw).schema()  # type: ignore
-    return dict(name=f.__name__, description=f.__doc__, parameters=s)
+    s = create_model(f"Input for `{func.__name__}`", **kw).schema()  # type: ignore
+    return dict(name=func.__name__, description=func.__doc__, parameters=s)
 
 
 def function_to_model(func: Callable) -> type[BaseModel]:
@@ -65,8 +62,6 @@ def get_function_source(func: Callable) -> str:
 
 
 def get_function_info(func: Callable) -> dict[str, str]:
-    """Get a string with the name, signature, and docstring of a function."""
-
     func = func.func if isinstance(func, partial) else func
     name = func.__name__
     signature = inspect.signature(func)

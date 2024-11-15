@@ -6,9 +6,13 @@ from functools import partial
 from itertools import groupby
 from operator import itemgetter
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
+import instructor
+from anthropic import Anthropic, AsyncAnthropic
+from google.generativeai import GenerativeModel
 from loguru import logger
+from openai import AsyncOpenAI, OpenAI
 from pydantic import AfterValidator, BaseModel
 from sqlmodel import Field, Relationship, SQLModel
 
@@ -28,7 +32,33 @@ MessageType = dict[str, Any]
 
 TRIMMED_LEN = 40
 MERGE_JOINER = "\n\n--- Next Message ---\n\n"
-MODEL = ModelName.GEMINI_FLASH
+MODEL_NAME = ModelName.GEMINI_FLASH
+TEMPERATURE = 0.1
+MAX_TOKENS = 3000
+
+
+def create_creator(
+    model_name: ModelName = MODEL_NAME, use_async: bool = False
+) -> instructor.Instructor | instructor.AsyncInstructor:
+    if "gpt" in model_name.lower():
+        if use_async:
+            client = instructor.from_openai(AsyncOpenAI())
+        else:
+            client = instructor.from_openai(OpenAI())
+    elif "claude" in model_name.lower():
+        if use_async:
+            client = instructor.from_anthropic(AsyncAnthropic())
+        else:
+            client = instructor.from_anthropic(Anthropic())
+    elif "gemini" in model_name.lower():
+        client = instructor.from_gemini(
+            client=GenerativeModel(model_name=model_name),
+            mode=instructor.Mode.GEMINI_JSON,
+            use_async=use_async,  # type: ignore
+        )
+    else:
+        raise ValueError(f"Model {model_name} not supported")
+    return client.chat.completions
 
 
 def load_content(content: Any, echo: bool = True) -> Any:
@@ -126,7 +156,7 @@ def trim_messages(messages: Messages, trimmed_len: int = TRIMMED_LEN) -> list[Me
 
 
 def messages_to_kwargs(
-    messages: Messages, system: str = "", model_name: str = MODEL, joiner: Content = MERGE_JOINER
+    messages: Messages, system: str = "", model_name: str = MODEL_NAME, joiner: Content = MERGE_JOINER
 ) -> dict:
     messages = deepcopy(messages)
     kwargs = {"messages": messages}
@@ -146,7 +176,7 @@ def messages_to_kwargs(
 class SQL_Dialog(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     system: str = ""
-    model_name: str = MODEL
+    model_name: str = MODEL_NAME
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
     messages: list["SQL_Message"] = Relationship(back_populates="sql_dialog")
@@ -164,7 +194,9 @@ class SQL_Message(SQLModel, table=True):
 class Dialog(BaseModel):
     system: Content = ""
     messages: Messages = Field(default_factory=list)
-    model_name: str = MODEL
+    model_name: str = MODEL_NAME
+    creation_config: dict = dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
+    memory_tags: list[Literal["core", "recall"]] = Field(default_factory=list)
 
     def to_sql_dialog(self) -> SQL_Dialog:
         return SQL_Dialog(
@@ -172,15 +204,24 @@ class Dialog(BaseModel):
         )
 
 
+def dialog_to_kwargs(dialog: Dialog) -> dict:
+    kwargs = messages_to_kwargs(messages=dialog.messages, system=dialog.system, model_name=dialog.model_name)
+    if "gemini" in dialog.model_name.lower():
+        kwargs["generation_config"] = dialog.creation_config
+    else:
+        kwargs.update(dialog.creation_config)
+    return kwargs
+
+
 def add_assistant_message(dialog: Dialog, creator: Content) -> Dialog:
     try:
         res = (
-            creator(
+            creator.create(
                 **messages_to_kwargs(
                     messages=deepcopy(dialog.messages), system=dialog.system, model_name=dialog.model_name
                 )
             )
-            if callable(creator)
+            if isinstance(creator, (instructor.Instructor, instructor.AsyncInstructor))
             else creator
         )
     except Exception as e:
