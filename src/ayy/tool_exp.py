@@ -61,7 +61,7 @@ def ask_user(prompt: str) -> str:
 
 def run_call_ai(creator: Instructor | AsyncInstructor, dialog: Dialog, tool: SelectedToolBase) -> Dialog:
     dialog.messages.append(user_message(content=tool.prompt))
-    logger.info(f"\n\nCalling AI with messages: {messages}\n\n")
+    logger.info(f"\n\nCalling AI with messages: {dialog.messages}\n\n")
     res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
     logger.success(f"call_ai result: {res}")
     dialog.messages.append(assistant_message(content=res))
@@ -89,8 +89,37 @@ def run_tool(
     return dialog
 
 
-default_tools = [call_ai, ask_user]
-tools = default_tools + [get_weather, list_available_grounds, upload_video]
+def run_tools(
+    creator: Instructor | AsyncInstructor, dialog: Dialog, tools: list[SelectedToolBase], tools_dict: dict
+) -> Dialog:
+    for tool in tools:  # type:ignore
+        if tool.name == "ask_user":
+            dialog = call_ask_user(dialog=dialog, tool=tool)
+        elif tool.name == "call_ai":
+            dialog = run_call_ai(creator=creator, dialog=dialog, tool=tool)
+        else:
+            dialog = run_tool(creator=creator, dialog=dialog, tool=tool, tools_dict=tools_dict)
+
+    if not any(x.name for x in tools if x.name not in DEFAULT_TOOLS):  # type:ignore
+        seq = 0 if tools[-1].name != "ask_user" else 1  # type:ignore
+        while True:
+            if seq % 2 == 0:
+                user_input = input("('q' or 'exit' or 'quit' to quit) > ")
+                if user_input.lower() in ["q", "exit", "quit"]:
+                    break
+                dialog.messages.append(user_message(content=user_input))
+            else:
+                res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
+                logger.success(f"call_ai result: {res}")
+                dialog.messages.append(assistant_message(content=res))
+            seq += 1
+
+    logger.success(f"Messages: {dialog.messages}")
+    return dialog
+
+
+DEFAULT_TOOLS = [call_ai, ask_user]
+tools = DEFAULT_TOOLS + [get_weather, list_available_grounds, upload_video]
 tools_dict = {func.__name__: func for func in tools}
 SelectedTool = create_model("SelectedTool", name=(Literal[*tools_dict.keys()], ...), __base__=SelectedToolBase)
 tools_info = "\n\n".join([f"Tool {i}:\n{get_function_info(func)}" for i, func in enumerate(tools, start=1)])
@@ -125,9 +154,14 @@ When to use 'call_ai':
 
 creator = create_creator(model_name=MODEL_NAME)
 
-messages = [user_message("I want to buy a new mac")]
 selector_dialog = Dialog(
-    system=tools_message.format(tools_info=tools_info), messages=messages, model_name=MODEL_NAME
+    system=tools_message.format(tools_info=tools_info),
+    messages=[
+        user_message(
+            "I want to play a football match. What are the available grounds? I won't play if it's raining"
+        )
+    ],
+    model_name=MODEL_NAME,
 )
 selected_path = Path("selected_tools.json")
 if not selected_path.exists():
@@ -140,28 +174,5 @@ else:
 selected_tools = selected_tools or [
     SelectedTool(chain_of_thought="", name="call_ai", prompt="Generate a response")
 ]
-runner_dialog = Dialog(messages=deepcopy(messages), model_name=MODEL_NAME)
-for tool in selected_tools:  # type:ignore
-    if tool.name == "ask_user":
-        runner_dialog = call_ask_user(dialog=runner_dialog, tool=tool)
-    elif tool.name == "call_ai":
-        runner_dialog = run_call_ai(creator=creator, dialog=runner_dialog, tool=tool)
-    else:
-        runner_dialog = run_tool(creator=creator, dialog=runner_dialog, tool=tool, tools_dict=tools_dict)
-
-
-if not any(x.name for x in selected_tools if x.name not in default_tools):  # type:ignore
-    seq = 0 if selected_tools[-1].name != "ask_user" else 1  # type:ignore
-    while True:
-        if seq % 2 == 0:
-            user_input = input("('q' or 'exit' or 'quit' to quit) > ")
-            if user_input.lower() in ["q", "exit", "quit"]:
-                break
-            runner_dialog.messages.append(user_message(content=user_input))
-        else:
-            res = creator.create(**dialog_to_kwargs(dialog=runner_dialog), response_model=str)
-            logger.success(f"call_ai result: {res}")
-            runner_dialog.messages.append(assistant_message(content=res))
-        seq += 1
-
-logger.success(f"Messages: {messages}")
+runner_dialog = Dialog(messages=deepcopy(selector_dialog.messages), model_name=MODEL_NAME)
+runner_dialog = run_tools(creator=creator, dialog=runner_dialog, tools=selected_tools, tools_dict=tools_dict)  # type:ignore
