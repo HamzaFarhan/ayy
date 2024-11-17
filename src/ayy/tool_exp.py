@@ -136,7 +136,6 @@ def run_next_tool(creator: Instructor | AsyncInstructor, dialog: Dialog) -> Dial
 
 def run_tools(creator: Instructor | AsyncInstructor, dialog: Dialog, continue_dialog: bool = True) -> Dialog:
     global tool_queue, tool_dict, current_tool_name
-    non_default_tools_used = set()
     tool_queue = deque(tool_queue) if tool_queue else deque([DEFAULT_TOOL])
     while tool_queue:
         print(f"\nTOOL QUEUE: {tool_queue}\n")
@@ -155,8 +154,6 @@ def run_tools(creator: Instructor | AsyncInstructor, dialog: Dialog, continue_di
             continue
         current_tool_name = current_tool.name
         dialog = run_selected_tool(creator=creator, dialog=dialog, tool=current_tool)
-        if current_tool_name not in [func.__name__ for func in DEFAULT_TOOLS]:
-            non_default_tools_used.add(current_tool.name)
     if continue_dialog:
         seq = int(current_tool_name == "ask_user")
         while True:
