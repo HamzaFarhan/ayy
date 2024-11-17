@@ -13,8 +13,6 @@ from ayy.func_utils import function_to_type, get_function_info
 MODEL_NAME = ModelName.GEMINI_FLASH
 DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
 
-days = Literal["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-
 
 class Tool(BaseModel):
     chain_of_thought: str
@@ -28,7 +26,9 @@ class Tool(BaseModel):
 DEFAULT_TOOL = Tool(chain_of_thought="", name="call_ai", prompt=DEFAULT_PROMPT)
 
 
-def get_weather(day: days, location: str) -> str:
+def get_weather(
+    day: Literal["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], location: str
+) -> str:
     "get the weather at a day in a location"
     if day == "Monday" and location.lower() == "blackpool":
         return "It's raining"
