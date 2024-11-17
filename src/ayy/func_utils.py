@@ -1,10 +1,10 @@
 import inspect
 import typing
 from functools import partial
-from inspect import Signature
-from typing import Callable
+from inspect import Parameter, Signature
+from typing import Any, Callable
 
-from pydantic import BaseModel, create_model
+from pydantic import create_model
 
 from ayy.utils import deindent
 
@@ -20,51 +20,79 @@ def get_required_param_names(func: Callable) -> list[str]:
         return [
             name
             for name, param in params.items()
-            if param.default == inspect.Parameter.empty and name not in func.keywords.keys()
+            if param.default == Parameter.empty and name not in func.keywords.keys()
         ]
     params = inspect.signature(func).parameters
-    return [name for name, param in params.items() if param.default == inspect.Parameter.empty]
+    return [name for name, param in params.items() if param.default == Parameter.empty]
 
 
 def function_schema(func: Callable) -> dict:
     kw = {
-        n: (o.annotation, ... if o.default == inspect.Parameter.empty else o.default)
+        n: (o.annotation, ... if o.default == Parameter.empty else o.default)
         for n, o in inspect.signature(func).parameters.items()
     }
     s = create_model(f"Input for `{func.__name__}`", **kw).schema()  # type: ignore
     return dict(name=func.__name__, description=func.__doc__, parameters=s)
 
 
-def get_non_default_signature(func: Callable) -> Signature:
+def skip_default_params_(func: Callable) -> Signature:
     if isinstance(func, partial):
         signature = inspect.signature(func.func)
+        print(f"Keywords: {func.keywords}")
         return signature.replace(
             parameters=[
                 p
                 for p in signature.parameters.values()
-                if p.default == inspect.Parameter.empty and p.name not in func.keywords
+                if p.default == Parameter.empty and p.name not in func.keywords
             ]
         )
     else:
         signature = inspect.signature(func)
         return signature.replace(
-            parameters=[p for p in signature.parameters.values() if p.default == inspect.Parameter.empty]
+            parameters=[p for p in signature.parameters.values() if p.default == Parameter.empty]
         )
 
 
-def function_to_model(func: Callable | type, ignore_defaults: bool = False) -> type[BaseModel] | type:
+def get_function_signature(
+    func: Callable, ignore_default_values: bool = False, skip_default_params: bool = False
+) -> Signature:
+    if skip_default_params:
+        return skip_default_params_(func)
+    else:
+        if isinstance(func, partial):
+            signature = inspect.signature(func.func)
+        else:
+            signature = inspect.signature(func)
+        if ignore_default_values:
+            return signature.replace(
+                parameters=[
+                    Parameter(name=p.name, kind=p.kind, default=Parameter.empty, annotation=p.annotation)
+                    for p in signature.parameters.values()
+                ]
+            )
+        else:
+            return signature
+
+
+def function_to_type(
+    func: Callable | type, ignore_default_values: bool = False, skip_default_params: bool = False
+) -> type:
     if isinstance(func, type):
         return func
     kw = {
         n: (
-            str if o.annotation == inspect.Parameter.empty else o.annotation,
-            ... if o.default == inspect.Parameter.empty else o.default,
+            str if o.annotation == Parameter.empty else o.annotation,
+            ... if (o.default == Parameter.empty or ignore_default_values) else o.default,
         )
         for n, o in (
-            get_non_default_signature(func) if ignore_defaults else inspect.signature(func)
+            get_function_signature(
+                func, ignore_default_values=ignore_default_values, skip_default_params=skip_default_params
+            )
         ).parameters.items()
     }
-    return create_model(func.__name__, __doc__=func.__doc__, **kw)  # type:ignore
+    if isinstance(func, partial):
+        func = func.func
+    return create_model(func.__name__, __doc__=inspect.getdoc(func), **kw)  # type:ignore
 
 
 def get_function_return_type(func: Callable) -> type:
@@ -83,10 +111,14 @@ def get_function_source(func: Callable) -> str:
     return inspect.getsource(func)
 
 
-def get_function_info(func: Callable, ignore_defaults: bool = False) -> dict[str, str]:
+def get_function_info(
+    func: Callable, ignore_default_values: bool = False, skip_default_params: bool = False
+) -> dict[str, str]:
+    signature = get_function_signature(
+        func=func, ignore_default_values=ignore_default_values, skip_default_params=skip_default_params
+    )
     func = func.func if isinstance(func, partial) else func
     name = func.__name__
-    signature = get_non_default_signature(func) if ignore_defaults else inspect.signature(func)
     docstring = inspect.getdoc(func)
     info = {"name": name}
     if signature:
@@ -96,16 +128,33 @@ def get_function_info(func: Callable, ignore_defaults: bool = False) -> dict[str
     return info
 
 
-def get_weather(day: str, location: str) -> str:
-    "get the weather at a day in a location"
-    if day == "Monday" and location.lower() == "blackpool":
-        return "It's raining"
-    elif day == "Tuesday" and location.lower() == "london":
-        return "It's sunny"
-    else:
-        return "It's overcast"
+def create_function_info(
+    name: str, parameters: dict[str, tuple[type, Any]] | None = None, docstring: str = ""
+) -> dict[str, str]:
+    parameters = parameters or {}
+    sig_params = []
+    for param_name, (param_type, default_value) in parameters.items():
+        sig_params.append(
+            Parameter(
+                name=param_name,
+                annotation=param_type,
+                default=Parameter.empty if default_value is ... else default_value,
+                kind=Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        )
+    signature = Signature(parameters=sig_params)
+    info = {"name": name}
+    info["signature"] = f"{name}{signature}".replace("__main__.", "")
+    if docstring:
+        info["docstring"] = docstring
+    return info
 
 
-gw = partial(get_weather, location="blackpool")
-print(get_function_info(gw, ignore_defaults=True))
-print(get_non_default_signature(gw))
+def type_to_function_info(typ: type, func_name: str, param_name: str, docstring: str) -> dict[str, str]:
+    info = {"name": func_name}
+    info["signature"] = f"{func_name}({param_name}: {typ.__name__})"
+    if docstring:
+        info["docstring"] = docstring
+    return info
+
+
