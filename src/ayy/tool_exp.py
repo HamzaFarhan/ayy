@@ -134,7 +134,7 @@ def run_next_tool(creator: Instructor | AsyncInstructor, dialog: Dialog) -> Dial
     return dialog
 
 
-def run_tools(creator: Instructor | AsyncInstructor, dialog: Dialog, continue_dialog:bool=True) -> Dialog:
+def run_tools(creator: Instructor | AsyncInstructor, dialog: Dialog, continue_dialog: bool = True) -> Dialog:
     global tool_queue, tool_dict
     non_default_tools_used = set()
     tool_queue = deque(tool_queue) if tool_queue else deque([DEFAULT_TOOL])
@@ -165,7 +165,9 @@ def run_tools(creator: Instructor | AsyncInstructor, dialog: Dialog, continue_di
                 user_input = input("('q' or 'exit' or 'quit' to quit) > ")
                 if user_input.lower() in ["q", "exit", "quit"]:
                     break
-                dialog.messages.append(user_message(content=user_input))
+                tool_queue.appendleft(partial(new_task, dialog=dialog, task=user_input))  # type: ignore
+                dialog = run_tools(creator=creator, dialog=dialog, continue_dialog=False)
+                # dialog.messages.append(user_message(content=user_input))
             else:
                 res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
                 logger.success(f"ai response: {res}")
@@ -202,7 +204,7 @@ def new_task(dialog: Dialog, task: str, available_tools: list[str] | None = None
             for i, tool in enumerate(available_tools or tool_dict.keys(), start=1)
         ]
     )
-    dialog.messages += [user_message(content=Path("selector_task.txt").read_text().format(tools_info=tools_info))]
+    dialog.messages += [user_message(content=f"Available tools for this task:\n{tools_info}")]
     tool_queue.appendleft(Tool(chain_of_thought="", name="get_selected_tools", prompt=task))
     return dialog
 
@@ -212,7 +214,7 @@ tool_dict = {func.__name__: {"info": get_function_info(func), "func": func} for 
 tool_queue = deque()
 
 creator = create_creator(model_name=MODEL_NAME)
-dialog = Dialog(model_name=MODEL_NAME)
+dialog = Dialog(system=Path("selector_task.txt").read_text(), model_name=MODEL_NAME)
 
 
 tool_queue.extendleft(
@@ -221,8 +223,8 @@ tool_queue.extendleft(
         partial(
             new_task,
             dialog=dialog,
-            task="hello",
+            task="I want to play a football match. list the available grounds.",
         ),
-        ][::-1]
+    ][::-1]
 )
 runner_dialog = run_tools(creator=creator, dialog=dialog)

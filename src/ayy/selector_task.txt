@@ -18,11 +18,4 @@ When to use 'call_ai':
     - Whenever you want. In between or at the start/end.
     - To get the AI to generate something. This could be the final response or something in between tool calls.
     - To extract information before the next tool call.
-
-<tools>
-
-{tools_info}
-
-<task>
-
 """
