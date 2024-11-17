@@ -135,10 +135,9 @@ def run_next_tool(creator: Instructor | AsyncInstructor, dialog: Dialog) -> Dial
 
 
 def run_tools(creator: Instructor | AsyncInstructor, dialog: Dialog, continue_dialog: bool = True) -> Dialog:
-    global tool_queue, tool_dict
+    global tool_queue, tool_dict, current_tool_name
     non_default_tools_used = set()
     tool_queue = deque(tool_queue) if tool_queue else deque([DEFAULT_TOOL])
-    current_tool_name = DEFAULT_TOOL.name
     while tool_queue:
         print(f"\nTOOL QUEUE: {tool_queue}\n")
         print(f"\nTOOL DICT: {tool_dict}\n")
@@ -161,7 +160,7 @@ def run_tools(creator: Instructor | AsyncInstructor, dialog: Dialog, continue_di
     if continue_dialog:
         seq = int(current_tool_name == "ask_user")
         while True:
-            if seq % 2 == 0:
+            if seq % 2 == 0 or current_tool_name == "call_ai":
                 user_input = input("('q' or 'exit' or 'quit' to quit) > ")
                 if user_input.lower() in ["q", "exit", "quit"]:
                     break
@@ -169,6 +168,7 @@ def run_tools(creator: Instructor | AsyncInstructor, dialog: Dialog, continue_di
                 dialog = run_tools(creator=creator, dialog=dialog, continue_dialog=False)
                 # dialog.messages.append(user_message(content=user_input))
             else:
+                current_tool_name = "call_ai"
                 res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
                 logger.success(f"ai response: {res}")
                 dialog.messages.append(assistant_message(content=res))
@@ -212,6 +212,7 @@ def new_task(dialog: Dialog, task: str, available_tools: list[str] | None = None
 DEFAULT_TOOLS = {call_ai, ask_user}
 tool_dict = {func.__name__: {"info": get_function_info(func), "func": func} for func in DEFAULT_TOOLS}
 tool_queue = deque()
+current_tool_name = DEFAULT_TOOL.name
 
 creator = create_creator(model_name=MODEL_NAME)
 dialog = Dialog(system=Path("selector_task.txt").read_text(), model_name=MODEL_NAME)
