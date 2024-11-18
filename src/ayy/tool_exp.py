@@ -171,7 +171,7 @@ def run_tools(creator: Instructor | AsyncInstructor, dialog: Dialog, continue_di
                 dialog.messages.append(assistant_message(content=res))
             seq += 1
 
-    logger.success(f"Messages: {dialog.messages}")
+    logger.success(f"Messages: {dialog.messages[-2:]}")
     return dialog
 
 
@@ -213,16 +213,16 @@ current_tool_name = DEFAULT_TOOL.name
 
 creator = create_creator(model_name=MODEL_NAME)
 dialog = Dialog(system=Path("selector_task.txt").read_text(), model_name=MODEL_NAME)
+add_new_tools(new_tools=[get_weather, list_available_grounds, upload_video])
 
-
-tool_queue.extendleft(
-    [
-        partial(add_new_tools, new_tools=[get_weather, list_available_grounds, upload_video]),
-        partial(
-            new_task,
-            dialog=dialog,
-            task="I want to play a football match. list the available grounds.",
-        ),
-    ][::-1]
-)
+# tool_queue.extendleft(
+#     [
+#         partial(add_new_tools, new_tools=[get_weather, list_available_grounds, upload_video]),
+#         partial(
+#             new_task,
+#             dialog=dialog,
+#             task="I want to play a football match. list the available grounds.",
+#         ),
+#     ][::-1]
+# )
 runner_dialog = run_tools(creator=creator, dialog=dialog)
