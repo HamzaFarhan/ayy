@@ -160,6 +160,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "sqlmodel" },
+    { name = "valkey" },
 ]
 
 [package.metadata]
@@ -173,6 +174,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.9.2" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "sqlmodel", specifier = ">=0.0.22" },
+    { name = "valkey", specifier = ">=6.0.2" },
 ]
 
 [[package]]
@@ -1910,6 +1912,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e0/fc/1d785078eefd6945f3e5bab5c076e4230698046231eb0f3747bc5c8fa992/uvicorn-0.32.0.tar.gz", hash = "sha256:f78b36b143c16f54ccdb8190d0a26b5f1901fe5a3c777e1ab29f26391af8551e", size = 77564 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/eb/14/78bd0e95dd2444b6caacbca2b730671d4295ccb628ef58b81bee903629df/uvicorn-0.32.0-py3-none-any.whl", hash = "sha256:60b8f3a5ac027dcd31448f411ced12b5ef452c646f76f02f8cc3f25d8d26fd82", size = 63723 },
+]
+
+[[package]]
+name = "valkey"
+version = "6.0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/45/f7/b552b7a67017e6233cd8a3b783ce8c4b548e29df98daedd7fb4c4c2cc8f8/valkey-6.0.2.tar.gz", hash = "sha256:dc2e91512b82d1da0b91ab0cdbd8c97c0c0250281728cb32f9398760df9caeae", size = 4602149 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d7/cb/b1eac0fe9cbdbba0a5cf189f5778fe54ba7d7c9f26c2f62ca8d759b38f52/valkey-6.0.2-py3-none-any.whl", hash = "sha256:dbbdd65439ee0dc5689502c54f1899504cc7268e85cb7fe8935f062178ff5805", size = 260101 },
 ]
 
 [[package]]
