@@ -234,3 +234,6 @@ def add_assistant_message(dialog: Dialog, creator: Content) -> Dialog:
 def add_user_message(dialog: Dialog, content: Content, template: Content = "") -> Dialog:
     dialog.messages.append(user_message(content=content, template=template))
     return dialog
+
+
+print("hello")

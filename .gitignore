@@ -10,3 +10,4 @@ wheels/
 .venv
 footy_guide
 .vscode
+__pycache__

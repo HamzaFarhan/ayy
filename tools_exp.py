@@ -1,8 +1,9 @@
 from pathlib import Path
 from typing import Literal
+from valkey import Valkey
 
 from ayy.dialog import Dialog, ModelName, create_creator
-from ayy.tools import add_new_tools, run_tools
+from ayy.tools2 import add_new_tools, run_tools, new_task
 
 MODEL_NAME = ModelName.GEMINI_FLASH
 
@@ -34,7 +35,15 @@ def upload_video(video_path: str) -> str:
     return video_path
 
 
+# Initialize Valkey client
+valkey_client = Valkey()
+
+add_new_tools(valkey_client, new_tools=[get_weather, list_available_grounds, upload_video])
 creator = create_creator(model_name=MODEL_NAME)
-dialog = Dialog(system=Path("selector_task.txt").read_text(), model_name=MODEL_NAME)
-add_new_tools(new_tools=[get_weather, list_available_grounds, upload_video])
-runner_dialog = run_tools(creator=creator, dialog=dialog)
+dialog = new_task(
+    valkey_client,
+    dialog=Dialog(system=Path("selector_task.txt").read_text(), model_name=MODEL_NAME),
+    task="get the weather in blackpool",
+)
+
+runner_dialog = run_tools(valkey_client, creator=creator, dialog=dialog)
