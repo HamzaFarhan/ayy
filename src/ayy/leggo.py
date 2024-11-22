@@ -15,6 +15,7 @@ from ayy.func_utils import function_to_type, get_function_info
 
 MODEL_NAME = ModelName.GEMINI_FLASH
 DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
+DEFAULT_TOOLS = set(["ask_user", "call_ai", "get_selected_tools"])
 
 
 class Tool(BaseModel):
@@ -59,6 +60,13 @@ def update_current_tool(valkey_client: Valkey, tool_name: str):
     valkey_client.set("current_tool_name", tool_name)
 
 
+def run_ask_user(dialog: Dialog, tool: Tool) -> Dialog:
+    tool.prompt = tool.prompt or DEFAULT_PROMPT
+    res = input(f"{tool.prompt}\n> ")
+    dialog.messages += [assistant_message(content=tool.prompt), user_message(content=res)]
+    return dialog
+
+
 def run_call_ai(creator: Instructor | AsyncInstructor, dialog: Dialog, tool: Tool) -> Dialog:
     tool.prompt = tool.prompt or DEFAULT_PROMPT
     dialog.messages.append(user_message(content=tool.prompt))
@@ -66,13 +74,6 @@ def run_call_ai(creator: Instructor | AsyncInstructor, dialog: Dialog, tool: Too
     res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
     logger.success(f"call_ai result: {res}")
     dialog.messages.append(assistant_message(content=res))
-    return dialog
-
-
-def call_ask_user(dialog: Dialog, tool: Tool) -> Dialog:
-    tool.prompt = tool.prompt or DEFAULT_PROMPT
-    res = input(f"{tool.prompt}\n> ")
-    dialog.messages += [assistant_message(content=tool.prompt), user_message(content=res)]
     return dialog
 
 
@@ -119,7 +120,6 @@ def run_tool(
         response_model=tool_type,  # type: ignore
     )
     logger.info(f"{tool.name} creator_res: {creator_res}")
-    logger.info(f"{tool.name} selected_tool: {selected_tool}")
     if isinstance(creator_res, BaseModel):
         res = selected_tool(**creator_res.model_dump())
     else:
@@ -135,7 +135,7 @@ def run_selected_tool(
     valkey_client: Valkey, creator: Instructor | AsyncInstructor, dialog: Dialog, tool: Tool
 ) -> Dialog:
     if tool.name.lower() == "ask_user":
-        dialog = call_ask_user(dialog=dialog, tool=tool)
+        dialog = run_ask_user(dialog=dialog, tool=tool)
     elif tool.name.lower() == "call_ai":
         dialog = run_call_ai(creator=creator, dialog=dialog, tool=tool)
     else:
@@ -148,6 +148,24 @@ def run_next_tool(valkey_client: Valkey, creator: Instructor | AsyncInstructor, 
     if tool_queue:
         tool = pop_next_tool(valkey_client=valkey_client)
         dialog = run_selected_tool(valkey_client=valkey_client, creator=creator, dialog=dialog, tool=tool)
+    return dialog
+
+
+def new_task(
+    valkey_client: Valkey, dialog: Dialog, task: str, available_tools: list[str] | set[str] | None = None
+) -> Dialog:
+    available_tools = available_tools or []
+    tool_queue = get_tool_queue(valkey_client)
+    tools_info = "\n\n".join(
+        [
+            f"Tool {i}:\n{get_function_info(func)}"
+            for i, (_, func) in enumerate(inspect.getmembers(tools, inspect.isfunction), start=1)
+            if not available_tools or func.__name__ in set(available_tools) | DEFAULT_TOOLS
+        ]
+    )
+    dialog.messages += [user_message(content=f"Available tools for this task:\n{tools_info}")]
+    tool_queue.appendleft(Tool(chain_of_thought="", name="get_selected_tools", prompt=task))
+    update_tool_queue(valkey_client=valkey_client, tool_queue=tool_queue)
     return dialog
 
 
@@ -210,22 +228,7 @@ def run_tools(
 
 
 def get_selected_tools(valkey_client: Valkey, selected_tools: list[Tool]):
-    """Get a list of selected tools for the task"""
+    """Get and push a list of selected tools for the task"""
     tool_queue = get_tool_queue(valkey_client)
     tool_queue.extendleft(selected_tools[::-1])
     update_tool_queue(valkey_client=valkey_client, tool_queue=tool_queue)
-
-
-def new_task(valkey_client: Valkey, dialog: Dialog, task: str) -> Dialog:
-    tool_queue = get_tool_queue(valkey_client)
-
-    tools_info = "\n\n".join(
-        [
-            f"Tool {i}:\n{get_function_info(func)}"
-            for i, (_, func) in enumerate(inspect.getmembers(tools, inspect.isfunction), start=1)
-        ]
-    )
-    dialog.messages += [user_message(content=f"Available tools for this task:\n{tools_info}")]
-    tool_queue.appendleft(Tool(chain_of_thought="", name="get_selected_tools", prompt=task))
-    update_tool_queue(valkey_client=valkey_client, tool_queue=tool_queue)
-    return dialog
