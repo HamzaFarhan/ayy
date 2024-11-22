@@ -1,8 +1,8 @@
-import json
 from collections import deque
 from functools import partial
-from typing import Any, Callable, Literal, Deque
+from typing import Any, Callable, Deque, Literal
 
+import dill
 from instructor import AsyncInstructor, Instructor
 from loguru import logger
 from pydantic import BaseModel, Field, create_model
@@ -29,8 +29,8 @@ DEFAULT_TOOL = Tool(chain_of_thought="", name="call_ai", prompt=DEFAULT_PROMPT)
 
 def get_tool_dict(valkey_client: Valkey) -> dict:
     """Get tool dictionary from Valkey store"""
-    tool_dict = valkey_client.get("tool_dict")
-    return json.loads(tool_dict) if tool_dict else {}  # type: ignore
+    serialized = valkey_client.get("tool_dict")
+    return dill.loads(serialized) if serialized else {}
 
 
 def get_tool_queue(valkey_client: Valkey) -> Deque:
@@ -46,7 +46,8 @@ def get_current_tool(valkey_client: Valkey) -> str:
 
 def update_tool_dict(valkey_client: Valkey, tool_dict: dict):
     """Update tool dictionary in Valkey store"""
-    valkey_client.set("tool_dict", json.dumps(tool_dict))
+    serialized = dill.dumps(tool_dict)
+    valkey_client.set("tool_dict", serialized)
 
 
 def update_tool_queue(valkey_client: Valkey, queue: Deque):
@@ -213,14 +214,16 @@ def add_new_tools(valkey_client: Valkey, new_tools: set[Callable] | list[Callabl
     tool_dict = get_tool_dict(valkey_client)
 
     for func in new_tools:
-        tool_dict[func.__name__] = {"info": get_function_info(func), "func": func}
+        tool_dict[func.__name__] = {
+            "info": get_function_info(func),
+            "func": func,  # dill will handle the function serialization
+        }
 
     tool_dict["get_selected_tools"] = {
         "info": get_function_info(get_selected_tools),
         "func": get_selected_tools,
         "type": list[create_model("SelectedTool", name=(Literal[*tool_dict.keys()], ...), __base__=Tool)],  # type: ignore
     }
-
     update_tool_dict(valkey_client, tool_dict)
 
 

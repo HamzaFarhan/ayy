@@ -182,3 +182,21 @@ DEFAULT_TOOLS = {call_ai, ask_user}
 tool_dict = {func.__name__: {"info": get_function_info(func), "func": func} for func in DEFAULT_TOOLS}
 tool_queue = deque()
 current_tool_name = DEFAULT_TOOL.name
+
+
+"""
+I'm thinking of a tagging system for memory. Just a thought experiment for now.
+
+So let's say we have 3 tags:
+1. Organization: Shared information for all tasks and users
+2. User: Information for a specific user across all tasks for that user
+3. Task: Information for a specific task
+
+For every new message, we ask the LLM to tag it.
+Next we have some triggers:
+1. List of messages grows too long
+2. The number of messages with a certain tag exceeds a certain threshold
+
+If either of these triggers are met, we summarize and the dump the messages into their specific storage.
+We then also need a way to query a specfic storage when needed.
+"""
