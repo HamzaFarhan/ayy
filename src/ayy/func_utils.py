@@ -35,7 +35,10 @@ def function_schema(func: Callable) -> dict:
     return dict(name=func.__name__, description=func.__doc__, parameters=s)
 
 
-def skip_default_params_(func: Callable) -> Signature:
+def skip_params(
+    func: Callable, skip_default_params: bool = False, params_to_skip: list[str] | None = None
+) -> Signature:
+    params_to_skip = params_to_skip or []
     if isinstance(func, partial):
         signature = inspect.signature(func.func)
         print(f"Keywords: {func.keywords}")
@@ -43,21 +46,29 @@ def skip_default_params_(func: Callable) -> Signature:
             parameters=[
                 p
                 for p in signature.parameters.values()
-                if p.default == Parameter.empty and p.name not in func.keywords
+                if (p.default == Parameter.empty and p.name not in func.keywords and skip_default_params)
+                or (p.name in params_to_skip)
             ]
         )
     else:
         signature = inspect.signature(func)
         return signature.replace(
-            parameters=[p for p in signature.parameters.values() if p.default == Parameter.empty]
+            parameters=[
+                p
+                for p in signature.parameters.values()
+                if (p.default == Parameter.empty and skip_default_params) or (p.name in params_to_skip)
+            ]
         )
 
 
 def get_function_signature(
-    func: Callable, ignore_default_values: bool = False, skip_default_params: bool = False
+    func: Callable,
+    ignore_default_values: bool = False,
+    skip_default_params: bool = False,
+    params_to_skip: list[str] | None = None,
 ) -> Signature:
-    if skip_default_params:
-        return skip_default_params_(func)
+    if skip_default_params or params_to_skip:
+        return skip_params(func, skip_default_params=skip_default_params, params_to_skip=params_to_skip)
     else:
         if isinstance(func, partial):
             signature = inspect.signature(func.func)
@@ -75,7 +86,10 @@ def get_function_signature(
 
 
 def function_to_type(
-    func: Callable | type, ignore_default_values: bool = False, skip_default_params: bool = False
+    func: Callable | type,
+    ignore_default_values: bool = False,
+    skip_default_params: bool = False,
+    params_to_skip: list[str] | None = None,
 ) -> type:
     if isinstance(func, type):
         return func
@@ -86,7 +100,10 @@ def function_to_type(
         )
         for n, o in (
             get_function_signature(
-                func, ignore_default_values=ignore_default_values, skip_default_params=skip_default_params
+                func,
+                ignore_default_values=ignore_default_values,
+                skip_default_params=skip_default_params,
+                params_to_skip=params_to_skip,
             )
         ).parameters.items()
     }
@@ -156,5 +173,3 @@ def type_to_function_info(typ: type, func_name: str, param_name: str, docstring:
     if docstring:
         info["docstring"] = docstring
     return info
-
-

@@ -1,6 +1,7 @@
+import inspect
 from collections import deque
 from functools import partial
-from typing import Any, Callable, Deque, Literal
+from typing import Deque, Literal
 
 import dill
 from instructor import AsyncInstructor, Instructor
@@ -8,6 +9,7 @@ from loguru import logger
 from pydantic import BaseModel, Field, create_model
 from valkey import Valkey
 
+from ayy import tools
 from ayy.dialog import Dialog, ModelName, assistant_message, dialog_to_kwargs, user_message
 from ayy.func_utils import function_to_type, get_function_info
 
@@ -27,47 +29,34 @@ class Tool(BaseModel):
 DEFAULT_TOOL = Tool(chain_of_thought="", name="call_ai", prompt=DEFAULT_PROMPT)
 
 
-def get_tool_dict(valkey_client: Valkey) -> dict:
-    """Get tool dictionary from Valkey store"""
-    serialized = valkey_client.get("tool_dict")
-    return dill.loads(serialized) if serialized else {}
-
-
 def get_tool_queue(valkey_client: Valkey) -> Deque:
-    """Get tool queue from Valkey store"""
     queue = valkey_client.get("tool_queue")
-    return deque(queue) if queue else deque()  # type: ignore
+    return deque(dill.loads(queue)) if queue else deque()  # type: ignore
 
 
 def get_current_tool(valkey_client: Valkey) -> str:
-    """Get current tool name from Valkey store"""
     return valkey_client.get("current_tool_name") or DEFAULT_TOOL.name  # type: ignore
 
 
-def update_tool_dict(valkey_client: Valkey, tool_dict: dict):
-    """Update tool dictionary in Valkey store"""
-    serialized = dill.dumps(tool_dict)
-    valkey_client.set("tool_dict", serialized)
+def update_tool_queue(valkey_client: Valkey, tool_queue: Deque):
+    tools = []
+    for tool in tool_queue:
+        if isinstance(tool, Tool):
+            tools.append(Tool(**tool.model_dump()))
+        else:
+            tools.append(tool)
+    valkey_client.set("tool_queue", dill.dumps(tools))
 
 
-def update_tool_queue(valkey_client: Valkey, queue: Deque):
-    """Update tool queue in Valkey store"""
-    valkey_client.set("tool_queue", list(queue))  # type: ignore
+def pop_next_tool(valkey_client: Valkey) -> Tool:
+    tool_queue = get_tool_queue(valkey_client)
+    tool = tool_queue.popleft()
+    update_tool_queue(valkey_client=valkey_client, tool_queue=tool_queue)
+    return tool
 
 
 def update_current_tool(valkey_client: Valkey, tool_name: str):
-    """Update current tool name in Valkey store"""
     valkey_client.set("current_tool_name", tool_name)
-
-
-def call_ai(inputs: Any) -> Any:
-    "Not a pre-defined tool."
-    return inputs
-
-
-def ask_user(prompt: str) -> str:
-    "Prompt the user for a response"
-    return prompt
 
 
 def run_call_ai(creator: Instructor | AsyncInstructor, dialog: Dialog, tool: Tool) -> Dialog:
@@ -95,28 +84,46 @@ def run_tool(
     ignore_default_values: bool = False,
     skip_default_params: bool = False,
 ) -> Dialog:
-    tool_dict = get_tool_dict(valkey_client)
-
+    try:
+        tool_attr = getattr(tools, tool.name, globals().get(tool.name, None))
+        if tool_attr is None:
+            raise ValueError(f"Tool '{tool.name}' not found in tools module")
+        if not inspect.isfunction(tool_attr):
+            raise ValueError(f"Tool '{tool.name}' is not a function.\nGot {type(tool_attr).__name__} instead")
+        selected_tool = tool_attr
+    except AttributeError:
+        raise ValueError(f"Tool '{tool.name}' not found in tools module")
     if tool.prompt:
         dialog.messages.append(user_message(content=tool.prompt))
-    logger.info(f"\n\nCalling for {tool.name} with messages: {dialog.messages}\n\n")
+
+    tool_type = getattr(tools, "tool_types", globals().get("tool_types", {})).get(tool.name, None)
+    all_tools = inspect.getmembers(tools, inspect.isfunction)
+    if tool.name == "get_selected_tools" and all_tools:
+        selected_tool = partial(get_selected_tools, valkey_client)
+        tool_type = list[
+            create_model(
+                "SelectedTool",
+                name=(Literal[*[tool_member[0] for tool_member in all_tools]], ...),  # type: ignore
+                __base__=Tool,
+            )
+        ]
+    if tool_type is None:
+        tool_type = function_to_type(
+            func=selected_tool,
+            ignore_default_values=ignore_default_values,
+            skip_default_params=skip_default_params,
+        )
+    logger.info(f"\n\nCalling {tool.name} with messages: {dialog.messages}\n\n")
     creator_res = creator.create(
         **dialog_to_kwargs(dialog=dialog),
-        response_model=tool_dict[tool.name].get(
-            "type",
-            function_to_type(
-                func=tool_dict[tool.name]["func"],
-                ignore_default_values=ignore_default_values,
-                skip_default_params=skip_default_params,
-            ),
-        ),
+        response_model=tool_type,  # type: ignore
     )
     logger.info(f"{tool.name} creator_res: {creator_res}")
-    selected_tool = tool_dict[tool.name]["func"]
+    logger.info(f"{tool.name} selected_tool: {selected_tool}")
     if isinstance(creator_res, BaseModel):
         res = selected_tool(**creator_res.model_dump())
     else:
-        res = selected_tool(creator_res)
+        res = selected_tool(creator_res)  # type: ignore
     logger.success(f"{tool.name} result: {res}")
     if isinstance(res, Dialog):
         return res
@@ -132,16 +139,15 @@ def run_selected_tool(
     elif tool.name.lower() == "call_ai":
         dialog = run_call_ai(creator=creator, dialog=dialog, tool=tool)
     else:
-        dialog = run_tool(valkey_client, creator=creator, dialog=dialog, tool=tool)
+        dialog = run_tool(valkey_client=valkey_client, creator=creator, dialog=dialog, tool=tool)
     return dialog
 
 
 def run_next_tool(valkey_client: Valkey, creator: Instructor | AsyncInstructor, dialog: Dialog) -> Dialog:
     tool_queue = get_tool_queue(valkey_client)
     if tool_queue:
-        tool = tool_queue.popleft()
-        update_tool_queue(valkey_client, tool_queue)
-        dialog = run_selected_tool(valkey_client, creator=creator, dialog=dialog, tool=tool)
+        tool = pop_next_tool(valkey_client=valkey_client)
+        dialog = run_selected_tool(valkey_client=valkey_client, creator=creator, dialog=dialog, tool=tool)
     return dialog
 
 
@@ -152,19 +158,17 @@ def run_tools(
     current_tool_name = get_current_tool(valkey_client)
     if not tool_queue:
         tool_queue = deque([DEFAULT_TOOL])
-        update_tool_queue(valkey_client, tool_queue)
+        update_tool_queue(valkey_client=valkey_client, tool_queue=tool_queue)
 
     while tool_queue:
         print(f"\nTOOL QUEUE: {tool_queue}\n")
-        print(f"\nTOOL DICT: {get_tool_dict(valkey_client)}\n")
-        current_tool = tool_queue.popleft()
-        update_tool_queue(valkey_client, tool_queue)
+        current_tool = pop_next_tool(valkey_client=valkey_client)
 
         if not isinstance(current_tool, Tool) and callable(current_tool):
             current_tool_name = (
                 current_tool.__name__ if not isinstance(current_tool, partial) else current_tool.func.__name__
             )
-            update_current_tool(valkey_client, current_tool_name)
+            update_current_tool(valkey_client=valkey_client, tool_name=current_tool_name)
             res = current_tool()
             if res:
                 if isinstance(res, Dialog):
@@ -174,26 +178,28 @@ def run_tools(
             continue
 
         current_tool_name = current_tool.name
-        update_current_tool(valkey_client, current_tool_name)
-        dialog = run_selected_tool(valkey_client, creator=creator, dialog=dialog, tool=current_tool)
+        update_current_tool(valkey_client=valkey_client, tool_name=current_tool_name)
+        dialog = run_selected_tool(valkey_client=valkey_client, creator=creator, dialog=dialog, tool=current_tool)
         tool_queue = get_tool_queue(valkey_client)
+        update_tool_queue(valkey_client=valkey_client, tool_queue=tool_queue)
 
     if continue_dialog:
-        current_tool_name = get_current_tool(valkey_client)
+        current_tool_name = get_current_tool(valkey_client=valkey_client)
         seq = int(current_tool_name == "ask_user")
         while True:
             if seq % 2 == 0 or current_tool_name == "call_ai":
                 user_input = input("('q' or 'exit' or 'quit' to quit) > ")
                 if user_input.lower() in ["q", "exit", "quit"]:
                     break
-                tool_queue.appendleft(
-                    partial(new_task, valkey_client=valkey_client, dialog=dialog, task=user_input)  # type: ignore
+                dialog = run_tools(
+                    valkey_client=valkey_client,
+                    creator=creator,
+                    dialog=new_task(valkey_client=valkey_client, dialog=dialog, task=user_input),
+                    continue_dialog=False,
                 )
-                update_tool_queue(valkey_client, tool_queue)
-                dialog = run_tools(valkey_client, creator=creator, dialog=dialog, continue_dialog=False)
             else:
                 current_tool_name = "call_ai"
-                update_current_tool(valkey_client, current_tool_name)
+                update_current_tool(valkey_client=valkey_client, tool_name=current_tool_name)
                 res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
                 logger.success(f"ai response: {res}")
                 dialog.messages.append(assistant_message(content=res))
@@ -207,41 +213,19 @@ def get_selected_tools(valkey_client: Valkey, selected_tools: list[Tool]):
     """Get a list of selected tools for the task"""
     tool_queue = get_tool_queue(valkey_client)
     tool_queue.extendleft(selected_tools[::-1])
-    update_tool_queue(valkey_client, tool_queue)
+    update_tool_queue(valkey_client=valkey_client, tool_queue=tool_queue)
 
 
-def add_new_tools(valkey_client: Valkey, new_tools: set[Callable] | list[Callable]):
-    tool_dict = get_tool_dict(valkey_client)
-
-    for func in new_tools:
-        tool_dict[func.__name__] = {
-            "info": get_function_info(func),
-            "func": func,  # dill will handle the function serialization
-        }
-
-    tool_dict["get_selected_tools"] = {
-        "info": get_function_info(get_selected_tools),
-        "func": get_selected_tools,
-        "type": list[create_model("SelectedTool", name=(Literal[*tool_dict.keys()], ...), __base__=Tool)],  # type: ignore
-    }
-    update_tool_dict(valkey_client, tool_dict)
-
-
-def new_task(valkey_client: Valkey, dialog: Dialog, task: str, available_tools: list[str] | None = None) -> Dialog:
-    tool_dict = get_tool_dict(valkey_client)
+def new_task(valkey_client: Valkey, dialog: Dialog, task: str) -> Dialog:
     tool_queue = get_tool_queue(valkey_client)
 
     tools_info = "\n\n".join(
         [
-            f"Tool {i}:\n{tool_dict[tool]['info']}"
-            for i, tool in enumerate(available_tools or tool_dict.keys(), start=1)
+            f"Tool {i}:\n{get_function_info(func)}"
+            for i, (_, func) in enumerate(inspect.getmembers(tools, inspect.isfunction), start=1)
         ]
     )
     dialog.messages += [user_message(content=f"Available tools for this task:\n{tools_info}")]
     tool_queue.appendleft(Tool(chain_of_thought="", name="get_selected_tools", prompt=task))
-    update_tool_queue(valkey_client, tool_queue)
+    update_tool_queue(valkey_client=valkey_client, tool_queue=tool_queue)
     return dialog
-
-
-# Initialize default tools
-DEFAULT_TOOLS = {call_ai, ask_user}
