@@ -38,20 +38,24 @@ def get_weather(
         return "It's raining"
     elif day == "Tuesday" and location.lower() == "london":
         return "It's sunny"
+    elif day == "Wednesday" and location.lower() == "manchester":
+        return "It's cloudy"
     else:
         return "It's overcast"
 
 
 def list_available_grounds(location: str) -> list[str]:
-    "list all available grounds in a city"
+    "list all available grounds in a location"
     if location.lower() == "blackpool":
         return ["The Hawthorns", "The Den", "The New Den"]
     elif location.lower() == "london":
-        return ["The Olympic Stadium", "The Emirates Stadium", "The Wembley Stadium"]
+        return ["Wembley Stadium", "Emirates Stadium", "Tottenham Hotspur Stadium"]
+    elif location.lower() == "manchester":
+        return ["The Old Trafford", "The Etihad Stadium", "The Maine Road"]
     else:
         return ["Palm Football"]
 
 
-def upload_video(video_path: str) -> str:
-    "save video and return the dest path"
-    return video_path
+def download_video(url: str) -> str:
+    "download video from url and return the local path"
+    return f"videos/{url.split('/')[-1]}"
