@@ -15,7 +15,7 @@ from ayy.tools import DEFAULT_TOOL, Tool
 from ayy.vk import get_current_tool, get_tool_queue, pop_next_tool, update_current_tool, update_tool_queue
 
 MODEL_NAME = ModelName.GEMINI_FLASH
-PINNED_TOOLS = set(["ask_user", "call_ai", "get_selected_tools"])
+PINNED_TOOLS = set(["ask_user", "call_ai"])
 
 
 def run_ask_user(dialog: Dialog, tool: Tool) -> Dialog:

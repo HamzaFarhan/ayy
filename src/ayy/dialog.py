@@ -20,7 +20,7 @@ from sqlmodel import Field, Relationship, SQLModel
 class ModelName(StrEnum):
     GPT = "gpt-4o-2024-08-06"
     GPT_MINI = "gpt-4o-mini"
-    HAIKU = "claude-3-haiku-20240307st"
+    HAIKU = "claude-3-haiku-latest"
     SONNET = "claude-3-5-sonnet-latest"
     OPUS = "claude-3-opus-latest"
     GEMINI_PRO = "gemini-1.5-pro-001"
