@@ -13,6 +13,9 @@ class Tool(BaseModel):
         description="An LLM will receive the messages so far and the tools calls and results up until now. This prompt will then be used to ask the LLM to generate arguments for the selected tool based on the tool's signature. If the tool doesn't have any parameters, then it doesn't need a prompt.",
     )
 
+    def __str__(self) -> str:
+        return f"Chain Of Thought: {self.chain_of_thought}\nName: {self.name}\nPrompt: {self.prompt}"
+
 
 DEFAULT_TOOL = Tool(chain_of_thought="", name="call_ai", prompt=DEFAULT_PROMPT)
 
@@ -46,7 +49,7 @@ def list_available_grounds(location: str) -> list[str]:
     elif location.lower() == "london":
         return ["The Olympic Stadium", "The Emirates Stadium", "The Wembley Stadium"]
     else:
-        return ["The Stadium"]
+        return ["Palm Football"]
 
 
 def upload_video(video_path: str) -> str:

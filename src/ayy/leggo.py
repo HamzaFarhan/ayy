@@ -148,7 +148,8 @@ def run_tools(
         update_tool_queue(valkey_client=valkey_client, tool_queue=tool_queue)
 
     while tool_queue:
-        print(f"\nTOOL QUEUE: {tool_queue}\n")
+        tools_str = "\n\n".join([str(tool) for tool in tool_queue])
+        logger.info(f"\nTOOL QUEUE:\n\n{tools_str}\n")
         current_tool = pop_next_tool(valkey_client=valkey_client)
 
         if not isinstance(current_tool, Tool) and callable(current_tool):
