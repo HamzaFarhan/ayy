@@ -1,63 +1,21 @@
 import inspect
 from collections import deque
 from functools import partial
-from typing import Deque, Literal
+from typing import Literal
 
-import dill
 from instructor import AsyncInstructor, Instructor
 from loguru import logger
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, create_model
 from valkey import Valkey
 
 from ayy import tools
-from ayy.dialog import Dialog, ModelName, assistant_message, dialog_to_kwargs, user_message
-from ayy.func_utils import function_to_type, get_function_info
+from ayy.dialog import DEFAULT_PROMPT, Dialog, ModelName, assistant_message, dialog_to_kwargs, user_message
+from ayy.func_utils import function_to_type, get_function_info, get_functions_from_module
+from ayy.tools import DEFAULT_TOOL, Tool
+from ayy.vk import get_current_tool, get_tool_queue, pop_next_tool, update_current_tool, update_tool_queue
 
 MODEL_NAME = ModelName.GEMINI_FLASH
-DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
-DEFAULT_TOOLS = set(["ask_user", "call_ai", "get_selected_tools"])
-
-
-class Tool(BaseModel):
-    chain_of_thought: str
-    name: str
-    prompt: str = Field(
-        ...,
-        description="An LLM will receive the messages so far and the tools calls and results up until now. This prompt will then be used to ask the LLM to generate arguments for the selected tool based on the tool's signature. If the tool doesn't have any parameters, then it doesn't need a prompt.",
-    )
-
-
-DEFAULT_TOOL = Tool(chain_of_thought="", name="call_ai", prompt=DEFAULT_PROMPT)
-
-
-def get_tool_queue(valkey_client: Valkey) -> Deque:
-    queue = valkey_client.get("tool_queue")
-    return deque(dill.loads(queue)) if queue else deque()  # type: ignore
-
-
-def get_current_tool(valkey_client: Valkey) -> str:
-    return valkey_client.get("current_tool_name") or DEFAULT_TOOL.name  # type: ignore
-
-
-def update_tool_queue(valkey_client: Valkey, tool_queue: Deque):
-    tools = []
-    for tool in tool_queue:
-        if isinstance(tool, Tool):
-            tools.append(Tool(**tool.model_dump()))
-        else:
-            tools.append(tool)
-    valkey_client.set("tool_queue", dill.dumps(tools))
-
-
-def pop_next_tool(valkey_client: Valkey) -> Tool:
-    tool_queue = get_tool_queue(valkey_client)
-    tool = tool_queue.popleft()
-    update_tool_queue(valkey_client=valkey_client, tool_queue=tool_queue)
-    return tool
-
-
-def update_current_tool(valkey_client: Valkey, tool_name: str):
-    valkey_client.set("current_tool_name", tool_name)
+PINNED_TOOLS = set(["ask_user", "call_ai", "get_selected_tools"])
 
 
 def run_ask_user(dialog: Dialog, tool: Tool) -> Dialog:
@@ -75,6 +33,13 @@ def run_call_ai(creator: Instructor | AsyncInstructor, dialog: Dialog, tool: Too
     logger.success(f"call_ai result: {res}")
     dialog.messages.append(assistant_message(content=res))
     return dialog
+
+
+def get_selected_tools(valkey_client: Valkey, selected_tools: list[Tool]):
+    """Get and push a list of selected tools for the task"""
+    tool_queue = get_tool_queue(valkey_client)
+    tool_queue.extendleft(selected_tools[::-1])
+    update_tool_queue(valkey_client=valkey_client, tool_queue=tool_queue)
 
 
 def run_tool(
@@ -98,7 +63,7 @@ def run_tool(
         dialog.messages.append(user_message(content=tool.prompt))
 
     tool_type = getattr(tools, "tool_types", globals().get("tool_types", {})).get(tool.name, None)
-    all_tools = inspect.getmembers(tools, inspect.isfunction)
+    all_tools = get_functions_from_module(module=tools)
     if tool.name == "get_selected_tools" and all_tools:
         selected_tool = partial(get_selected_tools, valkey_client)
         tool_type = list[
@@ -159,8 +124,8 @@ def new_task(
     tools_info = "\n\n".join(
         [
             f"Tool {i}:\n{get_function_info(func)}"
-            for i, (_, func) in enumerate(inspect.getmembers(tools, inspect.isfunction), start=1)
-            if not available_tools or func.__name__ in set(available_tools) | DEFAULT_TOOLS
+            for i, (_, func) in enumerate(get_functions_from_module(module=tools), start=1)
+            if not available_tools or func.__name__ in set(available_tools) | PINNED_TOOLS
         ]
     )
     dialog.messages += [user_message(content=f"Available tools for this task:\n{tools_info}")]
@@ -170,7 +135,11 @@ def new_task(
 
 
 def run_tools(
-    valkey_client: Valkey, creator: Instructor | AsyncInstructor, dialog: Dialog, continue_dialog: bool = True
+    valkey_client: Valkey,
+    creator: Instructor | AsyncInstructor,
+    dialog: Dialog,
+    continue_dialog: bool = True,
+    available_tools: list[str] | set[str] | None = None,
 ) -> Dialog:
     tool_queue = get_tool_queue(valkey_client)
     current_tool_name = get_current_tool(valkey_client)
@@ -212,7 +181,12 @@ def run_tools(
                 dialog = run_tools(
                     valkey_client=valkey_client,
                     creator=creator,
-                    dialog=new_task(valkey_client=valkey_client, dialog=dialog, task=user_input),
+                    dialog=new_task(
+                        valkey_client=valkey_client,
+                        dialog=dialog,
+                        task=user_input,
+                        available_tools=available_tools,
+                    ),
                     continue_dialog=False,
                 )
             else:
@@ -225,10 +199,3 @@ def run_tools(
 
     logger.success(f"Messages: {dialog.messages[-2:]}")
     return dialog
-
-
-def get_selected_tools(valkey_client: Valkey, selected_tools: list[Tool]):
-    """Get and push a list of selected tools for the task"""
-    tool_queue = get_tool_queue(valkey_client)
-    tool_queue.extendleft(selected_tools[::-1])
-    update_tool_queue(valkey_client=valkey_client, tool_queue=tool_queue)

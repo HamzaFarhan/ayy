@@ -9,6 +9,12 @@ from pydantic import create_model
 from ayy.utils import deindent
 
 
+def get_functions_from_module(module):
+    return [
+        x for x in inspect.getmembers(module, lambda x: inspect.isfunction(x) and x.__module__ == module.__name__)
+    ]
+
+
 def get_param_names(func: Callable):
     func = func.func if isinstance(func, partial) else func
     return inspect.signature(func).parameters.keys()

@@ -35,6 +35,7 @@ MERGE_JOINER = "\n\n--- Next Message ---\n\n"
 MODEL_NAME = ModelName.GEMINI_FLASH
 TEMPERATURE = 0.1
 MAX_TOKENS = 3000
+DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
 
 
 def create_creator(

@@ -1,6 +1,20 @@
 from typing import Any, Literal
 
-import numpy as np
+from pydantic import BaseModel, Field
+
+from ayy.dialog import DEFAULT_PROMPT
+
+
+class Tool(BaseModel):
+    chain_of_thought: str
+    name: str
+    prompt: str = Field(
+        ...,
+        description="An LLM will receive the messages so far and the tools calls and results up until now. This prompt will then be used to ask the LLM to generate arguments for the selected tool based on the tool's signature. If the tool doesn't have any parameters, then it doesn't need a prompt.",
+    )
+
+
+DEFAULT_TOOL = Tool(chain_of_thought="", name="call_ai", prompt=DEFAULT_PROMPT)
 
 
 def call_ai(inputs: Any) -> Any:
@@ -11,11 +25,6 @@ def call_ai(inputs: Any) -> Any:
 def ask_user(prompt: str) -> str:
     "Prompt the user for a response"
     return prompt
-
-
-def get_random_number() -> int:
-    "get a random number"
-    return np.random.randint(0, 100)
 
 
 def get_weather(
