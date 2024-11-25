@@ -35,10 +35,22 @@ def run_call_ai(creator: Instructor | AsyncInstructor, dialog: Dialog, tool: Too
     return dialog
 
 
-def get_selected_tools(valkey_client: Valkey, selected_tools: list[Tool]):
-    """Get and push a list of selected tools for the task"""
+def get_selected_tools(valkey_client: Valkey, selected_tools: list[Tool], get_approval: bool = True):
+    """
+    Get and push a list of selected tools for the task
+    It will also add an ask_user at the start to approve the tools. You don't need to add it yourself.
+    """
     tool_queue = get_tool_queue(valkey_client)
     tool_queue.extendleft(selected_tools[::-1])
+    if get_approval:
+        tool_queue_str = "\n\n".join([f"Tool {i}:\n{tool}" for i, tool in enumerate(tool_queue, start=1)])
+        tool_queue.appendleft(
+            Tool(
+                chain_of_thought="",
+                name="ask_user",
+                prompt=f"I will run these tools in sequence:\n\n{tool_queue_str}\n\nDo you approve?",
+            )
+        )
     update_tool_queue(valkey_client=valkey_client, tool_queue=tool_queue)
 
 

@@ -212,26 +212,3 @@ def dialog_to_kwargs(dialog: Dialog) -> dict:
     else:
         kwargs.update(dialog.creation_config)
     return kwargs
-
-
-def add_assistant_message(dialog: Dialog, creator: Content) -> Dialog:
-    try:
-        res = (
-            creator.create(
-                **messages_to_kwargs(
-                    messages=deepcopy(dialog.messages), system=dialog.system, model_name=dialog.model_name
-                )
-            )
-            if isinstance(creator, (instructor.Instructor, instructor.AsyncInstructor))
-            else creator
-        )
-    except Exception as e:
-        logger.exception(f"Error in respond. Last message: {dialog.messages[-1]}")
-        res = f"Error: {e}"
-    dialog.messages.append(assistant_message(content=res))
-    return dialog
-
-
-def add_user_message(dialog: Dialog, content: Content, template: Content = "") -> Dialog:
-    dialog.messages.append(user_message(content=content, template=template))
-    return dialog

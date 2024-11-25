@@ -1,5 +1,8 @@
-from typing import Any, Literal
+import asyncio
+from typing import Any, Literal, Type
 
+from crawl4ai import AsyncWebCrawler
+from crawl4ai.extraction_strategy import LLMExtractionStrategy
 from pydantic import BaseModel, Field
 
 from ayy.dialog import DEFAULT_PROMPT
@@ -59,3 +62,28 @@ def list_available_grounds(location: str) -> list[str]:
 def download_video(url: str) -> str:
     "download video from url and return the local path"
     return f"videos/{url.split('/')[-1]}"
+
+
+async def _crawl_with_llm(url: str, model_name: str, schema: Type[BaseModel]) -> BaseModel:
+    """Internal async function to crawl with LLM extraction"""
+    async with AsyncWebCrawler(verbose=True) as crawler:
+        result = await crawler.arun(
+            url=url,
+            extraction_strategy=LLMExtractionStrategy(
+                provider=model_name, schema=schema.model_json_schema(), extraction_type="schema"
+            ),
+            bypass_cache=True,
+        )
+        return schema.model_validate_json(str(result.extracted_content))
+
+
+async def _crawl_basic(url: str) -> str:
+    """Internal async function for basic crawling"""
+    async with AsyncWebCrawler(verbose=True) as crawler:
+        result = await crawler.arun(url=url)
+        return str(result.markdown)
+
+
+def crawl_webpage(url: str) -> str:
+    """Crawl a webpage and extract contents in markdown format."""
+    return asyncio.run(_crawl_basic(url))
