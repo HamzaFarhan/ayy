@@ -1,20 +1,26 @@
 import json
 from copy import deepcopy
-from datetime import datetime
 from enum import StrEnum
 from functools import partial
 from itertools import groupby
 from operator import itemgetter
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
 import instructor
 from anthropic import Anthropic, AsyncAnthropic
 from google.generativeai import GenerativeModel
 from loguru import logger
 from openai import AsyncOpenAI, OpenAI
-from pydantic import AfterValidator, BaseModel
-from sqlmodel import Field, Relationship, SQLModel
+from pydantic import AfterValidator, BaseModel, Field
+
+from ayy.memory import MemoryTag
+
+TRIMMED_LEN = 40
+MERGE_JOINER = "\n\n--- Next Message ---\n\n"
+TEMPERATURE = 0.1
+MAX_TOKENS = 3000
+DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
 
 
 class ModelName(StrEnum):
@@ -28,14 +34,21 @@ class ModelName(StrEnum):
     GEMINI_FLASH_EXP = "gemini-1.5-flash-exp-0827"
 
 
-MessageType = dict[str, Any]
+def load_content(content: Any, echo: bool = True) -> Any:
+    if not isinstance(content, (str, Path)) or isinstance(content, MemoryTag):
+        return content
+    else:
+        try:
+            return Path(content).read_text()
+        except Exception as e:
+            if echo:
+                logger.warning(f"Could not load content as a file: {str(e)[:100]}")
+            return str(content)
 
-TRIMMED_LEN = 40
-MERGE_JOINER = "\n\n--- Next Message ---\n\n"
+
 MODEL_NAME = ModelName.GEMINI_FLASH
-TEMPERATURE = 0.1
-MAX_TOKENS = 3000
-DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
+Content = Annotated[Any, AfterValidator(load_content)]
+MessageType = dict[str, Content]
 
 
 def create_creator(
@@ -60,21 +73,6 @@ def create_creator(
     else:
         raise ValueError(f"Model {model_name} not supported")
     return client.chat.completions
-
-
-def load_content(content: Any, echo: bool = True) -> Any:
-    if not isinstance(content, (str, Path)):
-        return content
-    else:
-        try:
-            return Path(content).read_text()
-        except Exception as e:
-            if echo:
-                logger.warning(f"Could not load content as a file: {str(e)[:100]}")
-            return str(content)
-
-
-Content = Annotated[Any, AfterValidator(load_content)]
 
 
 def chat_message(role: str, content: Content, template: Content = "") -> MessageType:
@@ -174,35 +172,11 @@ def messages_to_kwargs(
     return kwargs
 
 
-class SQL_Dialog(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    system: str = ""
-    model_name: str = MODEL_NAME
-    created_at: datetime = Field(default_factory=datetime.now)
-    updated_at: datetime = Field(default_factory=datetime.now)
-    messages: list["SQL_Message"] = Relationship(back_populates="sql_dialog")
-
-
-class SQL_Message(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    dialog_id: int = Field(foreign_key="sql_dialog.id")
-    role: str
-    content: str
-    created_at: datetime = Field(default_factory=datetime.now)
-    sql_dialog: SQL_Dialog = Relationship(back_populates="messages")
-
-
 class Dialog(BaseModel):
     system: Content = ""
     messages: Messages = Field(default_factory=list)
     model_name: str = MODEL_NAME
     creation_config: dict = dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
-    memory_tags: list[Literal["core", "recall"]] = Field(default_factory=list)
-
-    def to_sql_dialog(self) -> SQL_Dialog:
-        return SQL_Dialog(
-            system=self.system, model_name=self.model_name, messages=[SQL_Message(**msg) for msg in self.messages]
-        )
 
 
 def dialog_to_kwargs(dialog: Dialog) -> dict:
