@@ -1,15 +1,16 @@
 import json
 from copy import deepcopy
-from enum import StrEnum
+from enum import Enum, StrEnum
 from functools import partial
 from itertools import groupby
 from operator import itemgetter
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import instructor
 from anthropic import Anthropic, AsyncAnthropic
 from google.generativeai import GenerativeModel
+from instructor import AsyncInstructor, Instructor
 from loguru import logger
 from openai import AsyncOpenAI, OpenAI
 from pydantic import AfterValidator, BaseModel, Field
@@ -19,6 +20,7 @@ MERGE_JOINER = "\n\n--- Next Message ---\n\n"
 TEMPERATURE = 0.1
 MAX_TOKENS = 3000
 DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
+DEFAULT_TAG = "RECALL"
 
 
 class ModelName(StrEnum):
@@ -49,9 +51,7 @@ Content = Annotated[Any, AfterValidator(load_content)]
 MessageType = dict[str, Content]
 
 
-def create_creator(
-    model_name: ModelName = MODEL_NAME, use_async: bool = False
-) -> instructor.Instructor | instructor.AsyncInstructor:
+def create_creator(model_name: ModelName = MODEL_NAME, use_async: bool = False) -> Instructor | AsyncInstructor:
     if "gpt" in model_name.lower():
         if use_async:
             client = instructor.from_openai(AsyncOpenAI())
@@ -153,10 +153,15 @@ def trim_messages(messages: Messages, trimmed_len: int = TRIMMED_LEN) -> list[Me
 
 
 def messages_to_kwargs(
-    messages: Messages, system: str = "", model_name: str = MODEL_NAME, joiner: Content = MERGE_JOINER
+    messages: Messages,
+    system: str = "",
+    model_name: str = MODEL_NAME,
+    joiner: Content = MERGE_JOINER,
+    trimmed_len: int = TRIMMED_LEN,
 ) -> dict:
     messages = deepcopy(messages)
-    kwargs = {"messages": messages}
+    messages = trim_messages(messages=messages, trimmed_len=trimmed_len)
+    kwargs = {"messages": [chat_message(role=message["role"], content=message["content"]) for message in messages]}
     first_message = messages[0]
     if first_message["role"] == "system":
         system = system or first_message["content"]
@@ -173,14 +178,70 @@ def messages_to_kwargs(
 class Dialog(BaseModel):
     system: Content = ""
     messages: Messages = Field(default_factory=list)
-    model_name: str = MODEL_NAME
+    model_name: ModelName = MODEL_NAME
     creation_config: dict = dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
 
 
-def dialog_to_kwargs(dialog: Dialog) -> dict:
-    kwargs = messages_to_kwargs(messages=dialog.messages, system=dialog.system, model_name=dialog.model_name)
+def dialog_to_kwargs(dialog: Dialog, trimmed_len: int = TRIMMED_LEN) -> dict:
+    kwargs = messages_to_kwargs(
+        messages=dialog.messages, system=dialog.system, model_name=dialog.model_name, trimmed_len=trimmed_len
+    )
     if "gemini" in dialog.model_name.lower():
         kwargs["generation_config"] = dialog.creation_config
     else:
         kwargs.update(dialog.creation_config)
+    logger.info(f"kwargs: {kwargs}")
     return kwargs
+
+
+class MemoryTagInfo(BaseModel):
+    description: str
+    use_cases: list[str]
+
+
+class MemoryTag(Enum):
+    CORE = MemoryTagInfo(
+        description="Messages that are crucial and should persist even after the dialog concludes",
+        use_cases=[
+            "Important facts about the user",
+            "Long-term preferences",
+            "Critical instructions or rules",
+            "User feedback intended to improve future interactions",
+        ],
+    )
+    RECALL = MemoryTagInfo(
+        description="Messages relevant to the current task and should be remembered during the ongoing dialog",
+        use_cases=["Current task parameters", "Intermediate results", "Temporary user preferences"],
+    )
+
+
+def add_message(
+    dialog: Dialog,
+    role: str = "user",
+    content: Content = "",
+    template: Content = "",
+    message: MessageType | None = None,
+    tagger_dialog: Dialog | None = None,
+    tagger_trimmed_len: int = TRIMMED_LEN,
+) -> Dialog:
+    if not message:
+        message = chat_message(role=role, content=content, template=template)
+    if tagger_dialog is not None:
+        try:
+            tagger_dialog.system = (
+                tagger_dialog.system or f"Tag the latest message.Possible tags are {str(MemoryTag.__members__)}"
+            )
+            tagger_dialog.messages += dialog.messages + [message]
+            creator = create_creator(model_name=tagger_dialog.model_name)
+            tags: list[str] = creator.create(
+                **dialog_to_kwargs(dialog=tagger_dialog, trimmed_len=tagger_trimmed_len),
+                response_model=list[Literal[*MemoryTag._member_names_]],  # type: ignore
+            )
+        except Exception:
+            logger.exception(
+                f"Could not add tag to message: {message['content'][:100]}\nDefaulting to {DEFAULT_TAG}"
+            )
+            tags = [DEFAULT_TAG]
+        message["tags"] = list(set(tags) | {DEFAULT_TAG})
+    dialog.messages.append(message)
+    return dialog

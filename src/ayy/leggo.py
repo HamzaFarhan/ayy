@@ -9,13 +9,26 @@ from pydantic import BaseModel, create_model
 from valkey import Valkey
 
 from ayy import tools
-from ayy.dialog import DEFAULT_PROMPT, Dialog, ModelName, assistant_message, dialog_to_kwargs, user_message
+from ayy.dialog import (
+    DEFAULT_PROMPT,
+    Dialog,
+    MemoryTag,
+    ModelName,
+    add_message,
+    assistant_message,
+    dialog_to_kwargs,
+    user_message,
+)
 from ayy.func_utils import function_to_type, get_function_info, get_functions_from_module
 from ayy.tools import DEFAULT_TOOL, Tool
 from ayy.vk import get_current_tool, get_tool_queue, pop_next_tool, update_current_tool, update_tool_queue
 
 MODEL_NAME = ModelName.GEMINI_FLASH
 PINNED_TOOLS = set(["ask_user", "call_ai"])
+TAGGER_DIALOG = Dialog(
+    model_name=MODEL_NAME, system=f"Tag the latest message. Possible tags are {str(MemoryTag.__members__)}"
+)
+TAG = True
 
 
 def run_ask_user(dialog: Dialog, tool: Tool) -> Dialog:
@@ -25,13 +38,15 @@ def run_ask_user(dialog: Dialog, tool: Tool) -> Dialog:
     return dialog
 
 
-def run_call_ai(creator: Instructor | AsyncInstructor, dialog: Dialog, tool: Tool) -> Dialog:
+def run_call_ai(creator: Instructor | AsyncInstructor, dialog: Dialog, tool: Tool, tag: bool = TAG) -> Dialog:
     tool.prompt = tool.prompt or DEFAULT_PROMPT
-    dialog.messages.append(user_message(content=tool.prompt))
+    dialog = add_message(dialog=dialog, message=user_message(content=tool.prompt))
     logger.info(f"\n\nCalling AI with messages: {dialog.messages}\n\n")
     res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
     logger.success(f"call_ai result: {res}")
-    dialog.messages.append(assistant_message(content=res))
+    dialog = add_message(
+        dialog=dialog, message=assistant_message(content=res), tagger_dialog=TAGGER_DIALOG if tag else None
+    )
     return dialog
 
 
@@ -61,6 +76,7 @@ def run_tool(
     tool: Tool,
     ignore_default_values: bool = False,
     skip_default_params: bool = False,
+    tag: bool = TAG,
 ) -> Dialog:
     try:
         tool_attr = getattr(tools, tool.name, globals().get(tool.name, None))
@@ -72,7 +88,7 @@ def run_tool(
     except AttributeError:
         raise ValueError(f"Tool '{tool.name}' not found in tools module")
     if tool.prompt:
-        dialog.messages.append(user_message(content=tool.prompt))
+        dialog = add_message(dialog=dialog, message=user_message(content=tool.prompt))
 
     tool_type = getattr(tools, "tool_types", globals().get("tool_types", {})).get(tool.name, None)
     all_tools = get_functions_from_module(module=tools)
@@ -104,7 +120,9 @@ def run_tool(
     logger.success(f"{tool.name} result: {res}")
     if isinstance(res, Dialog):
         return res
-    dialog.messages.append(assistant_message(content=str(res)))
+    dialog = add_message(
+        dialog=dialog, message=assistant_message(content=str(res)), tagger_dialog=TAGGER_DIALOG if tag else None
+    )
     return dialog
 
 
@@ -152,6 +170,7 @@ def run_tools(
     dialog: Dialog,
     continue_dialog: bool = True,
     available_tools: list[str] | set[str] | None = None,
+    tag: bool = TAG,
 ) -> Dialog:
     tool_queue = get_tool_queue(valkey_client)
     current_tool_name = get_current_tool(valkey_client)
@@ -174,7 +193,11 @@ def run_tools(
                 if isinstance(res, Dialog):
                     dialog = res
                 else:
-                    dialog.messages.append(assistant_message(content=str(res)))
+                    dialog = add_message(
+                        dialog=dialog,
+                        message=assistant_message(content=str(res)),
+                        tagger_dialog=TAGGER_DIALOG if tag else None,
+                    )
             continue
 
         current_tool_name = current_tool.name
@@ -207,7 +230,11 @@ def run_tools(
                 update_current_tool(valkey_client=valkey_client, tool_name=current_tool_name)
                 res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
                 logger.success(f"ai response: {res}")
-                dialog.messages.append(assistant_message(content=res))
+                dialog = add_message(
+                    dialog=dialog,
+                    message=assistant_message(content=res),
+                    tagger_dialog=TAGGER_DIALOG if tag else None,
+                )
             seq += 1
 
     logger.success(f"Messages: {dialog.messages[-2:]}")
