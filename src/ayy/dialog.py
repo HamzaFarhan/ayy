@@ -14,8 +14,6 @@ from loguru import logger
 from openai import AsyncOpenAI, OpenAI
 from pydantic import AfterValidator, BaseModel, Field
 
-from ayy.memory import MemoryTag
-
 TRIMMED_LEN = 40
 MERGE_JOINER = "\n\n--- Next Message ---\n\n"
 TEMPERATURE = 0.1
@@ -35,7 +33,7 @@ class ModelName(StrEnum):
 
 
 def load_content(content: Any, echo: bool = True) -> Any:
-    if not isinstance(content, (str, Path)) or isinstance(content, MemoryTag):
+    if not isinstance(content, (str, Path)):
         return content
     else:
         try:

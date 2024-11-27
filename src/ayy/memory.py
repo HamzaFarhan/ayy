@@ -1,6 +1,9 @@
-from enum import StrEnum
+from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel
+
+from ayy.dialog import ModelName, create_creator, system_message, user_message
 
 
 class MemoryTagInfo(BaseModel):
@@ -8,43 +11,29 @@ class MemoryTagInfo(BaseModel):
     use_cases: list[str]
 
 
-class MemoryTag(StrEnum):
-    CORE = "core"
-    RECALL = "recall"
-    TEMPORARY = "temporary"
-    CONTEXT = "context"
-    ACTION = "action"
-    FEEDBACK = "feedback"
-    ERROR = "error"
-
-
-MEMORY_TAG_INFO = {
-    MemoryTag.CORE: MemoryTagInfo(
+class MemoryTag(Enum):
+    CORE = MemoryTagInfo(
         description="Messages that are crucial and should persist even after the dialog concludes",
-        use_cases=["Important facts about the user", "Long-term preferences", "Critical instructions or rules"],
-    ),
-    MemoryTag.RECALL: MemoryTagInfo(
+        use_cases=[
+            "Important facts about the user",
+            "Long-term preferences",
+            "Critical instructions or rules",
+            "User feedback intended to improve future interactions",
+        ],
+    )
+    RECALL = MemoryTagInfo(
         description="Messages relevant to the current task and should be remembered during the ongoing dialog",
         use_cases=["Current task parameters", "Intermediate results", "Temporary user preferences"],
-    ),
-    MemoryTag.TEMPORARY: MemoryTagInfo(
-        description="Messages that are only needed for a short duration and can be discarded afterward",
-        use_cases=["Clarification questions", "Intermediate calculations", "Status updates"],
-    ),
-    MemoryTag.CONTEXT: MemoryTagInfo(
-        description="Provides background information that aids in understanding the conversation",
-        use_cases=["Environmental details", "Previous interaction summaries", "Relevant historical data"],
-    ),
-    MemoryTag.ACTION: MemoryTagInfo(
-        description="Represents actions taken or to be taken",
-        use_cases=["Tool invocations", "Command executions", "System operations"],
-    ),
-    MemoryTag.FEEDBACK: MemoryTagInfo(
-        description="User or system feedback intended to improve future interactions",
-        use_cases=["User corrections", "Quality ratings", "Improvement suggestions"],
-    ),
-    MemoryTag.ERROR: MemoryTagInfo(
-        description="Records of errors or issues encountered during the dialog",
-        use_cases=["Exception messages", "Failed operations", "System warnings"],
-    ),
-}
+    )
+
+
+creator = create_creator(ModelName.GEMINI_FLASH)
+res = creator.create(
+    response_model=Literal[*MemoryTag._member_names_],  # type: ignore
+    messages=[
+        system_message(f"Possible tags are {str(MemoryTag.__members__)}"),
+        user_message("My name is Hamza.not that important"),
+    ],  # type: ignore
+)
+
+print(res)
