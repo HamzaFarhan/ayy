@@ -13,7 +13,7 @@ from google.generativeai import GenerativeModel
 from instructor import AsyncInstructor, Instructor
 from loguru import logger
 from openai import AsyncOpenAI, OpenAI
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field, field_validator
 
 TRIMMED_LEN = 40
 MERGE_JOINER = "\n\n--- Next Message ---\n\n"
@@ -21,6 +21,7 @@ TEMPERATURE = 0.1
 MAX_TOKENS = 3000
 DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
 DEFAULT_TAG = "RECALL"
+TAG_MESSAGES = True
 
 
 class ModelName(StrEnum):
@@ -203,6 +204,7 @@ class MemoryTag(Enum):
     CORE = MemoryTagInfo(
         description="Messages that are crucial and should persist even after the dialog concludes",
         use_cases=[
+            "Factual information that won't change",
             "Important facts about the user",
             "Long-term preferences",
             "Critical instructions or rules",
@@ -215,33 +217,74 @@ class MemoryTag(Enum):
     )
 
 
+class MemoryTags(BaseModel):
+    reasoning: str
+    tags: list[Literal[*MemoryTag._member_names_]]  # type: ignore
+
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, v: list[str]) -> list[str]:
+        return list(set(v) | {DEFAULT_TAG})
+
+
+TAGGER_DIALOG = Dialog(
+    model_name=MODEL_NAME,
+    system=f"Tag the latest message. Possible tags are {str(MemoryTag.__members__)}",
+    messages=[
+        user_message(content="it's sunny today"),
+        assistant_message(
+            content="reasoning: This is current weather information that will change. tags: ['RECALL']"
+        ),
+        user_message(content="I love sunny days"),
+        assistant_message(
+            content="reasoning: This expresses a general preference which is a permanent trait. tags: ['CORE']"
+        ),
+        user_message(content="My name is Hamza"),
+        assistant_message(content="reasoning: This is temporary identifying information. tags: ['RECALL']"),
+        user_message(content="My name is a permanent thing. The tag for permanent things should be CORE"),
+        assistant_message(
+            content="reasoning: You're right - a name is permanent identifying information. Apologies, I made a mistake. tags: ['CORE']"
+        ),
+        user_message(content="I'm going to the store"),
+        assistant_message(content="reasoning: This seems like a permanent activity. tags: ['CORE']"),
+        user_message(
+            content="Going to the store is a temporary activity, not a permanent fact. It should be RECALL"
+        ),
+        assistant_message(
+            content="reasoning: You're correct - this is a temporary activity. You're right, I apologize. tags: ['RECALL']"
+        ),
+        user_message(content="I'm planning a trip to visit my family in New York"),
+        assistant_message(
+            content="reasoning: The trip is temporary but having family in New York is permanent information. tags: ['RECALL', 'CORE']"
+        ),
+    ],
+)
+
+
 def add_message(
     dialog: Dialog,
     role: str = "user",
     content: Content = "",
     template: Content = "",
     message: MessageType | None = None,
-    tagger_dialog: Dialog | None = None,
+    tag_messages: bool = TAG_MESSAGES,
     tagger_trimmed_len: int = TRIMMED_LEN,
 ) -> Dialog:
-    if not message:
-        message = chat_message(role=role, content=content, template=template)
-    if tagger_dialog is not None:
+    message = message or chat_message(role=role, content=content, template=template)
+    if tag_messages:
         try:
-            tagger_dialog.system = (
-                tagger_dialog.system or f"Tag the latest message.Possible tags are {str(MemoryTag.__members__)}"
-            )
+            tagger_dialog = TAGGER_DIALOG.model_copy(deep=True)
             tagger_dialog.messages += dialog.messages + [message]
             creator = create_creator(model_name=tagger_dialog.model_name)
-            tags: list[str] = creator.create(
+            tags: MemoryTags = creator.create(
                 **dialog_to_kwargs(dialog=tagger_dialog, trimmed_len=tagger_trimmed_len),
-                response_model=list[Literal[*MemoryTag._member_names_]],  # type: ignore
+                response_model=MemoryTags,  # type: ignore
             )
         except Exception:
             logger.exception(
                 f"Could not add tag to message: {message['content'][:100]}\nDefaulting to {DEFAULT_TAG}"
             )
-            tags = [DEFAULT_TAG]
-        message["tags"] = list(set(tags) | {DEFAULT_TAG})
+            tags = MemoryTags(reasoning="", tags=[DEFAULT_TAG])
+        message["tags"] = tags.tags
     dialog.messages.append(message)
     return dialog
