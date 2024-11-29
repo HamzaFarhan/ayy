@@ -1,6 +1,4 @@
 import asyncio
-import json
-from pathlib import Path
 from typing import Set
 from urllib.parse import urljoin, urlparse
 
@@ -88,8 +86,3 @@ def crawl_url(
             url=url, max_depth=max_depth, max_links=max_links, same_domain_only=same_domain_only, prefixes=prefixes
         )
     )
-
-
-res = crawl_url(url="https://github.com/HamzaFarhan", prefixes=["https://github.com/HamzaFarhan"])
-logger.success(f"Keys: {res.keys()}")
-Path("crawled_hamza.json").write_text(json.dumps(res, indent=2))

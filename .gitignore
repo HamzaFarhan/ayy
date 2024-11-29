@@ -11,3 +11,5 @@ wheels/
 footy_guide
 .vscode
 __pycache__
+*.sqlite*
+*.db

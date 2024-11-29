@@ -18,6 +18,7 @@ dependencies = [
     "pydantic>=2.9.2",
     "python-dotenv>=1.0.1",
     "sqlmodel>=0.0.22",
+    "tortoise-orm>=0.22.1",
     "valkey>=6.0.2",
 ]
 

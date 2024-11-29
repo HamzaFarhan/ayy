@@ -11,7 +11,11 @@ from ayy.utils import deindent
 
 def get_functions_from_module(module):
     return [
-        x for x in inspect.getmembers(module, lambda x: inspect.isfunction(x) and x.__module__ == module.__name__)
+        x
+        for x in inspect.getmembers(
+            module, lambda member: inspect.isfunction(member) and member.__module__ == module.__name__
+        )
+        if not x[0].startswith("_")
     ]
 
 
