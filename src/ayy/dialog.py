@@ -6,6 +6,7 @@ from itertools import groupby
 from operator import itemgetter
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from uuid import uuid4
 
 import instructor
 from anthropic import Anthropic, AsyncAnthropic
@@ -13,15 +14,39 @@ from google.generativeai import GenerativeModel
 from instructor import AsyncInstructor, Instructor
 from loguru import logger
 from openai import AsyncOpenAI, OpenAI
-from pydantic import AfterValidator, BaseModel, Field, field_validator
+from pydantic import UUID4, AfterValidator, BaseModel, Field, field_validator
 
 TRIMMED_LEN = 40
 MERGE_JOINER = "\n\n--- Next Message ---\n\n"
 TEMPERATURE = 0.1
 MAX_TOKENS = 3000
-DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
 DEFAULT_TAG = "RECALL"
 TAG_MESSAGES = True
+
+DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
+
+
+class Tool(BaseModel):
+    id: UUID4 | str = Field(default_factory=lambda: str(uuid4()))
+    reasoning: str
+    name: str
+    prompt: str = Field(
+        ...,
+        description="An LLM will receive the messages so far and the tools calls and results up until now. This prompt will then be used to ask the LLM to generate arguments for the selected tool based on the tool's signature. If the tool doesn't have any parameters, then it doesn't need a prompt.",
+    )
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, v: UUID4 | str) -> str:
+        if isinstance(v, str):
+            v = uuid4()
+        return str(v)
+
+    def __str__(self) -> str:
+        return f"Reasoning: {self.reasoning}\nName: {self.name}\nPrompt: {self.prompt}"
+
+
+DEFAULT_TOOL = Tool(reasoning="", name="call_ai", prompt=DEFAULT_PROMPT)
 
 
 class ModelName(StrEnum):
@@ -177,6 +202,7 @@ def messages_to_kwargs(
 
 
 class Dialog(BaseModel):
+    id: UUID4 = Field(default_factory=lambda: uuid4())
     system: Content = ""
     messages: Messages = Field(default_factory=list)
     model_name: ModelName = MODEL_NAME

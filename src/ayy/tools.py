@@ -1,29 +1,10 @@
 import asyncio
 from typing import Any, Literal, Set
 from urllib.parse import urljoin, urlparse
-from uuid import uuid4
 
 from crawl4ai import AsyncWebCrawler
 from loguru import logger
-from pydantic import UUID4, BaseModel, Field
 
-from ayy.dialog import DEFAULT_PROMPT
-
-
-class Tool(BaseModel):
-    id: UUID4 = Field(default_factory=uuid4)
-    chain_of_thought: str
-    name: str
-    prompt: str = Field(
-        ...,
-        description="An LLM will receive the messages so far and the tools calls and results up until now. This prompt will then be used to ask the LLM to generate arguments for the selected tool based on the tool's signature. If the tool doesn't have any parameters, then it doesn't need a prompt.",
-    )
-
-    def __str__(self) -> str:
-        return f"Chain Of Thought: {self.chain_of_thought}\nName: {self.name}\nPrompt: {self.prompt}"
-
-
-DEFAULT_TOOL = Tool(chain_of_thought="", name="call_ai", prompt=DEFAULT_PROMPT)
 MAX_DEPTH = 2
 MAX_LINKS = 5
 
