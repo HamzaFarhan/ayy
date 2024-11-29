@@ -1,11 +1,10 @@
 import inspect
-from collections import deque
 from functools import partial
 from typing import Literal
 
 from instructor import AsyncInstructor, Instructor
 from loguru import logger
-from pydantic import BaseModel, create_model
+from pydantic import UUID4, BaseModel, create_model
 
 from ayy import tools
 from ayy.dialog import (
@@ -20,22 +19,27 @@ from ayy.dialog import (
     user_message,
 )
 from ayy.func_utils import function_to_type, get_function_info, get_functions_from_module
-from ayy.torm import get_current_tool, get_tool_queue, pop_next_tool, update_current_tool, update_tool_queue
+from ayy.torm import add_tools, get_next_tool, get_tools, save_dialog, set_tool_used
 
 MODEL_NAME = ModelName.GEMINI_FLASH
 PINNED_TOOLS = set(["ask_user", "call_ai"])
-TAG_MESSAGES = True
+TAG_MESSAGES = False
 
 
-def run_ask_user(dialog: Dialog, tool: Tool) -> Dialog:
+async def run_ask_user(dialog: Dialog, tool: Tool, db_name: str) -> Dialog:
     tool.prompt = tool.prompt or DEFAULT_PROMPT
     res = input(f"{tool.prompt}\n> ")
     dialog.messages += [assistant_message(content=tool.prompt), user_message(content=res)]
+    await save_dialog(dialog=dialog, db_name=db_name)
     return dialog
 
 
 async def run_call_ai(
-    creator: Instructor | AsyncInstructor, dialog: Dialog, tool: Tool, tag_messages: bool = TAG_MESSAGES
+    creator: Instructor | AsyncInstructor,
+    dialog: Dialog,
+    tool: Tool,
+    db_name: str,
+    tag_messages: bool = TAG_MESSAGES,
 ) -> Dialog:
     tool.prompt = tool.prompt or DEFAULT_PROMPT
     dialog = add_message(dialog=dialog, message=user_message(content=tool.prompt))
@@ -43,37 +47,16 @@ async def run_call_ai(
     res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
     logger.success(f"call_ai result: {res}")
     dialog = add_message(dialog=dialog, message=assistant_message(content=res), tag_messages=tag_messages)
+    await save_dialog(dialog=dialog, db_name=db_name)
     return dialog
 
 
-# async def get_selected_tools(db_name: str, selected_tools: list[Tool], get_approval: bool = False):
-#     """
-#     Get and push a list of selected tools for the task
-#     It will also add an ask_user at the start to approve the tools. You don't need to add it yourself.
-#     """
-#     tool_queue = await get_tool_queue(db_name=db_name)
-#     tool_queue.extendleft(selected_tools[::-1])
-#     if get_approval:
-#         tool_queue_str = "\n\n".join([f"Tool {i}:\n{tool}" for i, tool in enumerate(tool_queue, start=1)])
-#         tool_queue.appendleft(
-#             Tool(
-#                 reasoning="",
-#                 name="ask_user",
-#                 prompt=f"I will run these tools in sequence:\n\n{tool_queue_str}\n\nDo you approve?",
-#             )
-#         )
-#     await update_tool_queue(db_name=db_name, tool_queue=tool_queue)
-
-async def get_selected_tools(db_name: str, dialo selected_tools: list[Tool]):
+async def get_selected_tools(db_name: str, dialog: UUID4 | Dialog, selected_tools: list[Tool]):
     """
     Get and push a list of selected tools for the task
     It will also add an ask_user at the start to approve the tools. You don't need to add it yourself.
     """
-    tool_queue = await get_tool_queue(db_name=db_name)
-    tool_queue.extendleft(selected_tools[::-1])
-  
-    await update_tool_queue(db_name=db_name, tool_queue=tool_queue)
-
+    await add_tools(dialog=dialog, tools=selected_tools, db_name=db_name)
 
 
 async def run_tool(
@@ -98,11 +81,12 @@ async def run_tool(
         raise ValueError(f"Tool '{tool.name}' not found in tools module")
     if tool.prompt:
         dialog = add_message(dialog=dialog, message=user_message(content=tool.prompt))
+        await save_dialog(dialog=dialog, db_name=db_name)
 
     tool_type = getattr(tools, "tool_types", globals().get("tool_types", {})).get(tool.name, None)
     all_tools = get_functions_from_module(module=tools)
     if tool.name == "get_selected_tools" and len(all_tools) > 0:
-        selected_tool = partial(get_selected_tools, db_name)
+        selected_tool = partial(get_selected_tools, db_name, dialog)
         tool_type = list[
             create_model(
                 "SelectedTool",
@@ -142,6 +126,7 @@ async def run_tool(
     if isinstance(res, Dialog):
         return res
     dialog = add_message(dialog=dialog, message=assistant_message(content=str(res)), tag_messages=tag_messages)
+    await save_dialog(dialog=dialog, db_name=db_name)
     return dialog
 
 
@@ -149,27 +134,25 @@ async def run_selected_tool(
     db_name: str, creator: Instructor | AsyncInstructor, dialog: Dialog, tool: Tool
 ) -> Dialog:
     if tool.name.lower() == "ask_user":
-        dialog = run_ask_user(dialog=dialog, tool=tool)
+        dialog = await run_ask_user(dialog=dialog, tool=tool, db_name=db_name)
     elif tool.name.lower() == "call_ai":
-        dialog = await run_call_ai(creator=creator, dialog=dialog, tool=tool)
+        dialog = await run_call_ai(creator=creator, dialog=dialog, tool=tool, db_name=db_name)
     else:
         dialog = await run_tool(db_name=db_name, creator=creator, dialog=dialog, tool=tool)
     return dialog
 
 
 async def run_next_tool(db_name: str, creator: Instructor | AsyncInstructor, dialog: Dialog) -> Dialog:
-    tool_queue = await get_tool_queue(db_name=db_name)
-    if tool_queue:
-        tool = await pop_next_tool(db_name=db_name)
-        dialog = await run_selected_tool(db_name=db_name, creator=creator, dialog=dialog, tool=tool)
-    return dialog
+    next_tool = await get_next_tool(dialog=dialog, db_name=db_name)
+    if next_tool is None:
+        return dialog
+    return await run_selected_tool(db_name=db_name, creator=creator, dialog=dialog, tool=next_tool.tool)
 
 
 async def new_task(
     db_name: str, dialog: Dialog, task: str, available_tools: list[str] | set[str] | None = None
 ) -> Dialog:
     available_tools = available_tools or []
-    tool_queue = await get_tool_queue(db_name=db_name)
     tools_info = "\n\n".join(
         [
             f"Tool {i}:\n{get_function_info(func)}"
@@ -178,8 +161,10 @@ async def new_task(
         ]
     )
     dialog.messages += [user_message(content=f"Available tools for this task:\n{tools_info}")]
-    tool_queue.appendleft(Tool(reasoning="", name="get_selected_tools", prompt=task))
-    await update_tool_queue(db_name=db_name, tool_queue=tool_queue)
+    await save_dialog(dialog=dialog, db_name=db_name)
+    await add_tools(
+        dialog=dialog, tools=[Tool(reasoning="", name="get_selected_tools", prompt=task)], db_name=db_name
+    )
     return dialog
 
 
@@ -191,45 +176,19 @@ async def run_tools(
     available_tools: list[str] | set[str] | None = None,
     tag_messages: bool = TAG_MESSAGES,
 ) -> Dialog:
-    tool_queue = await get_tool_queue(db_name=db_name)
-    current_tool = await get_current_tool(db_name=db_name)
-    current_tool_name = current_tool.name
-    if not tool_queue:
-        tool_queue = deque([DEFAULT_TOOL])
-        await update_tool_queue(db_name=db_name, tool_queue=tool_queue)
-
-    while tool_queue:
-        # tools_str = "\n\n".join([str(tool) for tool in tool_queue])  # type: ignore
-        # logger.info(f"\nTOOL QUEUE:\n\n{tools_str}\n")
-        current_tool = await pop_next_tool(db_name=db_name)
-
-        # if not isinstance(current_tool, Tool) and callable(current_tool):
-        #     current_tool_name = (
-        #         current_tool.__name__ if not isinstance(current_tool, partial) else current_tool.func.__name__
-        #     )
-        #     await update_current_tool(tool_id=current_tool.id, db_name=db_name)
-        #     res = current_tool()
-        #     if res:
-        #         if isinstance(res, Dialog):
-        #             dialog = res
-        #         else:
-        #             dialog = add_message(
-        #                 dialog=dialog, message=assistant_message(content=str(res)), tag_messages=tag_messages
-        #             )
-        #     continue
-
-        current_tool_name = current_tool.name
-        await update_current_tool(tool_id=str(current_tool.id), db_name=db_name)
-        dialog = await run_selected_tool(db_name=db_name, creator=creator, dialog=dialog, tool=current_tool)
-        tool_queue = await get_tool_queue(db_name=db_name)
-        await update_tool_queue(db_name=db_name, tool_queue=tool_queue)
-
+    while True:
+        next_tool = await get_next_tool(dialog=dialog, db_name=db_name)
+        logger.info(f"next_tool: {next_tool}")
+        if next_tool is None:
+            break
+        dialog = await run_selected_tool(db_name=db_name, creator=creator, dialog=dialog, tool=next_tool.tool)
+        await set_tool_used(tool=next_tool.tool, dialog=dialog, db_name=db_name)
+    used_tools = await get_tools(dialog=dialog, db_name=db_name, used=True)
+    last_used_tool = used_tools[-1].tool if used_tools else DEFAULT_TOOL
     if continue_dialog:
-        current_tool = await get_current_tool(db_name=db_name)
-        current_tool_name = current_tool.name
-        seq = int(current_tool_name == "ask_user")
+        seq = int(last_used_tool.name == "ask_user")
         while True:
-            if seq % 2 == 0 or current_tool_name == "call_ai":
+            if seq % 2 == 0 or last_used_tool.name == "call_ai":
                 user_input = input("('q' or 'exit' or 'quit' to quit) > ")
                 if user_input.lower() in ["q", "exit", "quit"]:
                     break
@@ -242,13 +201,13 @@ async def run_tools(
                     continue_dialog=False,
                 )
             else:
-                current_tool_name = "call_ai"
-                await update_current_tool(tool_id=str(current_tool.id), db_name=db_name)
+                await add_tools(dialog=dialog, tools=[DEFAULT_TOOL], db_name=db_name)
                 res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
                 logger.success(f"ai response: {res}")
                 dialog = add_message(
                     dialog=dialog, message=assistant_message(content=res), tag_messages=tag_messages
                 )
+                await save_dialog(dialog=dialog, db_name=db_name)
             seq += 1
 
     logger.success(f"Messages: {dialog.messages[-2:]}")

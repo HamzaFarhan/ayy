@@ -38,5 +38,5 @@ class ToolUsage(models.Model):
 
     class Meta:  # type: ignore
         app = DEFAULT_APP_NAME
-        table = "tool_queue"
+        table = "tool_usage"
         ordering = ["dialog_id", "position"]

@@ -1,18 +1,21 @@
-from collections import deque
-from typing import Deque
-
 from loguru import logger
-from pydantic import UUID4
+from pydantic import UUID4, BaseModel
 from tortoise import Tortoise, connections
 from tortoise.contrib.pydantic import pydantic_model_creator, pydantic_queryset_creator
 from tortoise.expressions import F
 from tortoise.transactions import in_transaction
 
 from ayy.db_models import DEFAULT_APP_NAME, ToolUsage
+from ayy.db_models import Dialog as DBDialog
 from ayy.db_models import Tool as DBTool
-from ayy.dialog import DEFAULT_TOOL, Dialog, Tool
+from ayy.dialog import Dialog, Tool
 
 DEFAULT_DB_NAME = "tasks_db"
+
+
+class ToolWithPosition(BaseModel):
+    position: int
+    tool: Tool
 
 
 async def init_db(db_names: list[str] | str = DEFAULT_DB_NAME, app_names: list[str] | str = DEFAULT_APP_NAME):
@@ -31,99 +34,96 @@ async def init_db(db_names: list[str] | str = DEFAULT_DB_NAME, app_names: list[s
     await Tortoise.generate_schemas()
 
 
-async def get_next_tool(dialog_id: UUID4, db_name: str = DEFAULT_DB_NAME, position: int | None = None) -> Tool:
-    dialog_tools = ToolUsage.filter(dialog_id=dialog_id, using_db=connections.get(db_name))
+async def get_next_tool(
+    dialog: UUID4 | Dialog, db_name: str = DEFAULT_DB_NAME, position: int | None = None
+) -> ToolWithPosition | None:
+    dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
+    dialog_tools = ToolUsage.all(using_db=connections.get(db_name)).filter(dialog_id=dialog_id)
     if position is not None:
-        tool_usage = await dialog_tools.filter(position=position).first()
+        dialog_tools = await dialog_tools.filter(position=position).first()
     else:
-        tool_usage = await dialog_tools.filter(used=False).order_by("position").first()
-    if tool_usage is None:
-        return DEFAULT_TOOL
-    tool_model = await pydantic_model_creator(DBTool).from_tortoise_orm(tool_usage.tool)
-    return Tool(**tool_model.model_dump())
+        dialog_tools = await dialog_tools.filter(used=False).order_by("position").first()
+    if dialog_tools is None:
+        return None
+    tool_model = pydantic_model_creator(DBTool)
+    tool_model = await tool_model.from_tortoise_orm(await dialog_tools.tool)
+    return ToolWithPosition(position=dialog_tools.position, tool=Tool(**tool_model.model_dump()))
 
 
-async def get_unused_tools(dialog_id: UUID4, db_name: str = DEFAULT_DB_NAME) -> list[Tool]:
+async def get_tools(
+    dialog: UUID4 | Dialog, db_name: str = DEFAULT_DB_NAME, used: bool = False
+) -> list[ToolWithPosition]:
+    dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
     dialog_tools = await pydantic_queryset_creator(ToolUsage).from_queryset(
-        ToolUsage.filter(dialog_id=dialog_id, used=False, using_db=connections.get(db_name)).order_by("position")
+        ToolUsage.all(using_db=connections.get(db_name))
+        .filter(dialog_id=dialog_id, used=used)
+        .order_by("position")
     )
-    return [Tool(**tool["tool"].model_dump()) for tool in dialog_tools.model_dump()]
+    return [
+        ToolWithPosition(position=tool["position"], tool=Tool(**tool["tool"]))
+        for tool in dialog_tools.model_dump()
+    ]
 
 
-async def add_tool(
-    dialog: UUID4 | Dialog, tools: list[Tool] | Tool, db_name: str = DEFAULT_DB_NAME, position: int | None = None
+async def add_tools(
+    dialog: UUID4 | Dialog,
+    tools: list[Tool] | Tool,
+    db_name: str = DEFAULT_DB_NAME,
+    position: int | None = None,
 ) -> None:
-    conn = connections.get(db_name)
     tools = [tools] if isinstance(tools, Tool) else tools
+    conn = connections.get(db_name)
+    # for tool in tools:
+    #     tool_obj, _ = await DBTool.get_or_create(defaults=tool.model_dump(), using_db=conn, id=tool.id)
     dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
     async with in_transaction():
-        latest_tool = await ToolUsage.filter(dialog_id=dialog_id, using_db=conn).order_by("-position").first()
-        latest_position = latest_tool.position if latest_tool is not None else 0
-        start_position = latest_position + 1
+        conn = connections.get(db_name)
+        dialog_tools = ToolUsage.all(using_db=conn).filter(dialog_id=dialog_id)
+        query = dialog_tools.order_by("-position")
+        logger.info(f"About to execute query: {query.sql()}")
+        try:
+            latest_tool = await query.first()
+            logger.info(f"Query completed, latest_tool: {latest_tool}")
+        except Exception as e:
+            logger.error(f"Error in query execution: {str(e)}")
+            logger.error(f"Current connection: {conn}")
+            raise
 
+        if latest_tool is None:
+            latest_position = 0
+        else:
+            latest_position = latest_tool.position
+        logger.info(f"latest_position: {latest_position}")
         if position is not None:
-            await ToolUsage.filter(dialog_id=dialog_id, position__gte=position, using_db=conn).update(
-                position=F("position") + len(tools)
-            )
+            await dialog_tools.filter(position__gte=position).update(position=F("position") + len(tools))
             start_position = position
-
-        for i, tool in enumerate(tools, start=min(start_position, 1)):
-            tool_obj, _ = await DBTool.get_or_create(defaults=tool.model_dump(), id=tool.id, using_db=conn)
+        else:
+            start_position = latest_position + 1
+        for i, tool in enumerate(tools, start=start_position):
+            logger.info(f"tool: {tool}")
+            tool_obj, _ = await DBTool.get_or_create(defaults=tool.model_dump(), using_db=conn, id=tool.id)
             await ToolUsage.create(tool=tool_obj, dialog_id=dialog_id, position=i, using_db=conn)
 
 
-async def get_tool_queue(db_name: str = DEFAULT_DB_NAME) -> Deque[Tool]:
-    db_tool_queue = await pydantic_queryset_creator(ToolQueue).from_queryset(
-        ToolQueue.all(using_db=connections.get(db_name)).order_by("position")
+async def set_tool_used(tool: Tool, dialog: UUID4 | Dialog, db_name: str = DEFAULT_DB_NAME) -> None:
+    dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
+    await (
+        ToolUsage.all(using_db=connections.get(db_name))
+        .filter(tool_id=tool.id, dialog_id=dialog_id)
+        .update(used=True)
     )
-    logger.info(f"ToolQueue: {db_tool_queue.model_dump_json(indent=4)}")
-    return deque(Tool(**entry["tool"]) for entry in db_tool_queue.model_dump())
 
 
-async def get_current_tool(db_name: str = DEFAULT_DB_NAME) -> Tool:
-    current_tool = await DBTool.all(using_db=connections.get(db_name)).order_by("-timestamp").first()
-    if current_tool is None:
-        return DEFAULT_TOOL
-    current_tool = await pydantic_model_creator(DBTool).from_tortoise_orm(current_tool)
-    logger.info(f"CurrentTool: {current_tool.model_dump_json(indent=4)}")
-    return Tool(**current_tool.model_dump())  # type: ignore
+async def save_dialog(dialog: Dialog, db_name: str = DEFAULT_DB_NAME) -> None:
+    conn = connections.get(db_name)
+    await DBDialog.update_or_create(defaults=dialog.model_dump(), using_db=conn, id=dialog.id)
 
 
-async def update_tool_queue(tool_queue: Deque[Tool] | list[Tool] | Tool, db_name: str = DEFAULT_DB_NAME):
-    tool_queue = [tool_queue] if isinstance(tool_queue, Tool) else tool_queue
-    async with in_transaction():
-        await ToolQueue.all(using_db=connections.get(db_name)).delete()
-        for position, tool in enumerate(tool_queue, start=1):
-            tool_obj, _ = await DBTool.get_or_create(defaults=tool.model_dump(), id=tool.id)
-            await ToolQueue.create(using_db=connections.get(db_name), tool=tool_obj, position=position)
-
-
-async def add_tools_to_queue(tools: list[Tool] | Tool, db_name: str = DEFAULT_DB_NAME, top: bool = True):
-    tools = [tools] if isinstance(tools, Tool) else tools
-    tool_queue = await get_tool_queue(db_name=db_name)
-    if top:
-        tool_queue.extendleft(tools[::-1])
-    else:
-        tool_queue.extend(tools)
-    await update_tool_queue(tool_queue=tool_queue, db_name=db_name)
-
-
-async def pop_next_tool(db_name: str = DEFAULT_DB_NAME, top: bool = True) -> Tool:
-    tool_queue = await get_tool_queue(db_name=db_name)
-    if not tool_queue:
-        return DEFAULT_TOOL
-    tool = tool_queue.popleft() if top else tool_queue.pop()
-    await update_tool_queue(tool_queue=tool_queue, db_name=db_name)
-    return tool
-
-
-async def update_current_tool(tool_id: str, db_name: str = DEFAULT_DB_NAME):
-    tool_obj, _ = await DBTool.get_or_create(
-        defaults=DEFAULT_TOOL.model_dump(), using_db=connections.get(db_name), id=tool_id
-    )
-    current_tool, created = await CurrentTool.get_or_create(
-        defaults={"tool": tool_obj}, using_db=connections.get(db_name), id=tool_obj.id
-    )
-    if not created:
-        current_tool.tool = tool_obj
-        await current_tool.save(using_db=connections.get(db_name))
+async def load_dialog(dialog_id: UUID4, db_name: str = DEFAULT_DB_NAME) -> Dialog:
+    conn = connections.get(db_name)
+    dialog = pydantic_model_creator(DBDialog)
+    dialog_obj, _ = await DBDialog.get_or_create(id=dialog_id, using_db=conn)
+    if dialog_obj is None:
+        raise ValueError(f"Dialog with id {dialog_id} not found")
+    dialog_model = await dialog.from_tortoise_orm(dialog_obj)
+    return Dialog(**dialog_model.model_dump())
