@@ -73,8 +73,6 @@ async def add_tools(
 ) -> None:
     tools = [tools] if isinstance(tools, Tool) else tools
     conn = connections.get(db_name)
-    # for tool in tools:
-    #     tool_obj, _ = await DBTool.get_or_create(defaults=tool.model_dump(), using_db=conn, id=tool.id)
     dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
     async with in_transaction():
         conn = connections.get(db_name)
@@ -114,16 +112,25 @@ async def set_tool_used(tool: Tool, dialog: UUID4 | Dialog, db_name: str = DEFAU
     )
 
 
-async def save_dialog(dialog: Dialog, db_name: str = DEFAULT_DB_NAME) -> None:
+async def save_dialog(dialog: Dialog, dialog_name: str = "", db_name: str = DEFAULT_DB_NAME) -> None:
     conn = connections.get(db_name)
-    await DBDialog.update_or_create(defaults=dialog.model_dump(), using_db=conn, id=dialog.id)
+    await DBDialog.update_or_create(
+        defaults={"dialog_name": dialog_name, **dialog.model_dump()}, using_db=conn, id=dialog.id
+    )
 
 
-async def load_dialog(dialog_id: UUID4, db_name: str = DEFAULT_DB_NAME) -> Dialog:
+async def load_dialog(dialog: UUID4 | Dialog | str, db_name: str = DEFAULT_DB_NAME) -> Dialog:
+    if isinstance(dialog, Dialog):
+        return dialog
     conn = connections.get(db_name)
-    dialog = pydantic_model_creator(DBDialog)
-    dialog_obj, _ = await DBDialog.get_or_create(id=dialog_id, using_db=conn)
-    if dialog_obj is None:
-        raise ValueError(f"Dialog with id {dialog_id} not found")
-    dialog_model = await dialog.from_tortoise_orm(dialog_obj)
+    dialog_model = pydantic_model_creator(DBDialog)
+    if isinstance(dialog, str):
+        dialog_obj, _ = await DBDialog.get_or_create(dialog_name=dialog, using_db=conn)
+        if dialog_obj is None:
+            raise ValueError(f"Dialog with name {dialog} not found")
+    else:
+        dialog_obj, _ = await DBDialog.get_or_create(id=dialog, using_db=conn)
+        if dialog_obj is None:
+            raise ValueError(f"Dialog with id {dialog} not found")
+    dialog_model = await dialog_model.from_tortoise_orm(dialog_obj)
     return Dialog(**dialog_model.model_dump())

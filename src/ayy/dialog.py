@@ -21,8 +21,6 @@ MERGE_JOINER = "\n\n--- Next Message ---\n\n"
 TEMPERATURE = 0.1
 MAX_TOKENS = 3000
 DEFAULT_TAG = "RECALL"
-TAG_MESSAGES = True
-
 DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
 
 
@@ -257,34 +255,34 @@ TAGGER_DIALOG = Dialog(
     model_name=MODEL_NAME,
     system=f"Tag the latest message. Possible tags are {str(MemoryTag.__members__)}",
     messages=[
-        user_message(content="it's sunny today"),
-        assistant_message(
-            content="reasoning: This is current weather information that will change. tags: ['RECALL']"
+        *exchange(
+            user="it's sunny today",
+            assistant="reasoning: This is current weather information that will change. tags: ['RECALL']",
         ),
-        user_message(content="I love sunny days"),
-        assistant_message(
-            content="reasoning: This expresses a general preference which is a permanent trait. tags: ['CORE']"
+        *exchange(
+            user="I love sunny days",
+            assistant="reasoning: This expresses a general preference which is a permanent trait. tags: ['CORE']",
         ),
-        user_message(content="My name is Hamza"),
-        assistant_message(content="reasoning: This is temporary identifying information. tags: ['RECALL']"),
-        user_message(content="My name is a permanent thing. The tag for permanent things should be CORE"),
-        assistant_message(
-            content="reasoning: You're right - a name is permanent identifying information. Apologies, I made a mistake. tags: ['CORE']"
+        *exchange(
+            user="My name is Hamza",
+            assistant="reasoning: This is temporary identifying information. tags: ['RECALL']",
+            feedback="My name is a permanent thing. The tag for permanent things should be CORE",
+            correction="reasoning: You're right - a name is permanent identifying information. Apologies, I made a mistake. tags: ['CORE']",
         ),
-        user_message(content="I'm going to the store"),
-        assistant_message(content="reasoning: This seems like a permanent activity. tags: ['CORE']"),
-        user_message(
-            content="Going to the store is a temporary activity, not a permanent fact. It should be RECALL"
+        *exchange(
+            user="I'm going to the store",
+            assistant="reasoning: This seems like a permanent activity. tags: ['CORE']",
+            feedback="Going to the store is a temporary activity, not a permanent fact. It should be RECALL",
+            correction="reasoning: You're correct - this is a temporary activity. You're right, I apologize. tags: ['RECALL']",
         ),
-        assistant_message(
-            content="reasoning: You're correct - this is a temporary activity. You're right, I apologize. tags: ['RECALL']"
-        ),
-        user_message(content="I'm planning a trip to visit my family in New York"),
-        assistant_message(
-            content="reasoning: The trip is temporary but having family in New York is permanent information. tags: ['RECALL', 'CORE']"
+        *exchange(
+            user="I'm planning a trip to visit my family in New York",
+            assistant="reasoning: The trip is temporary but having family in New York is permanent information. tags: ['RECALL', 'CORE']",
         ),
     ],
 )
+
+DEFAULT_DIALOG = Dialog(system=Path("src/ayy/selector_task.txt").read_text(), model_name=MODEL_NAME)
 
 
 def add_message(
@@ -293,13 +291,14 @@ def add_message(
     content: Content = "",
     template: Content = "",
     message: MessageType | None = None,
-    tag_messages: bool = TAG_MESSAGES,
+    tagger_dialog: Dialog | None = None,
     tagger_trimmed_len: int = TRIMMED_LEN,
 ) -> Dialog:
+    if content is None:
+        return dialog
     message = message or chat_message(role=role, content=content, template=template)
-    if tag_messages:
+    if tagger_dialog is not None:
         try:
-            tagger_dialog = TAGGER_DIALOG.model_copy(deep=True)
             tagger_dialog.messages += dialog.messages + [message]
             creator = create_creator(model_name=tagger_dialog.model_name)
             tags: MemoryTags = creator.create(

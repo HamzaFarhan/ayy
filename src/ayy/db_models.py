@@ -22,6 +22,7 @@ class Dialog(models.Model):
     messages = fields.JSONField(default=list)
     model_name = fields.CharField(max_length=255, default=MODEL_NAME.value)
     creation_config = fields.JSONField(default=dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS))
+    dialog_name = fields.CharField(max_length=255, default="")
 
     class Meta:  # type: ignore
         app = DEFAULT_APP_NAME
@@ -29,7 +30,7 @@ class Dialog(models.Model):
 
 
 class ToolUsage(models.Model):
-    id = fields.UUIDField(pk=True)
+    id = fields.IntField(pk=True)
     tool = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Tool", related_name="usage_entries")
     dialog = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Dialog", related_name="usage_entries")
     position = fields.IntField()

@@ -15,15 +15,15 @@ from ayy.dialog import (
     Tool,
     add_message,
     assistant_message,
+    create_creator,
     dialog_to_kwargs,
     user_message,
 )
 from ayy.func_utils import function_to_type, get_function_info, get_functions_from_module
-from ayy.torm import add_tools, get_next_tool, get_tools, save_dialog, set_tool_used
+from ayy.torm import add_tools, get_next_tool, get_tools, load_dialog, save_dialog, set_tool_used
 
 MODEL_NAME = ModelName.GEMINI_FLASH
 PINNED_TOOLS = set(["ask_user", "call_ai"])
-TAG_MESSAGES = False
 
 
 async def run_ask_user(dialog: Dialog, tool: Tool, db_name: str) -> Dialog:
@@ -35,39 +35,48 @@ async def run_ask_user(dialog: Dialog, tool: Tool, db_name: str) -> Dialog:
 
 
 async def run_call_ai(
-    creator: Instructor | AsyncInstructor,
-    dialog: Dialog,
+    dialog: UUID4 | Dialog | str,
     tool: Tool,
     db_name: str,
-    tag_messages: bool = TAG_MESSAGES,
+    creator: Instructor | AsyncInstructor | None = None,
+    tagger_dialog: UUID4 | Dialog | None = None,
 ) -> Dialog:
+    dialog = await load_dialog(dialog=dialog, db_name=db_name)
+    if tagger_dialog is not None:
+        tagger_dialog = await load_dialog(dialog=tagger_dialog, db_name=db_name)
+    creator = creator or create_creator(model_name=dialog.model_name)
     tool.prompt = tool.prompt or DEFAULT_PROMPT
     dialog = add_message(dialog=dialog, message=user_message(content=tool.prompt))
     logger.info(f"\n\nCalling AI with messages: {dialog.messages}\n\n")
     res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
     logger.success(f"call_ai result: {res}")
-    dialog = add_message(dialog=dialog, message=assistant_message(content=res), tag_messages=tag_messages)
+    dialog = add_message(dialog=dialog, message=assistant_message(content=res), tagger_dialog=tagger_dialog)
     await save_dialog(dialog=dialog, db_name=db_name)
     return dialog
 
 
-async def get_selected_tools(db_name: str, dialog: UUID4 | Dialog, selected_tools: list[Tool]):
+async def get_selected_tools(db_name: str, dialog: UUID4 | Dialog | str, selected_tools: list[Tool]):
     """
     Get and push a list of selected tools for the task
     It will also add an ask_user at the start to approve the tools. You don't need to add it yourself.
     """
+    dialog = await load_dialog(dialog=dialog, db_name=db_name)
     await add_tools(dialog=dialog, tools=selected_tools, db_name=db_name)
 
 
 async def run_tool(
     db_name: str,
-    creator: Instructor | AsyncInstructor,
-    dialog: Dialog,
+    dialog: UUID4 | Dialog | str,
     tool: Tool,
+    creator: Instructor | AsyncInstructor | None = None,
     ignore_default_values: bool = False,
     skip_default_params: bool = False,
-    tag_messages: bool = TAG_MESSAGES,
+    tagger_dialog: UUID4 | Dialog | None = None,
 ) -> Dialog:
+    dialog = await load_dialog(dialog=dialog, db_name=db_name)
+    if tagger_dialog is not None:
+        tagger_dialog = await load_dialog(dialog=tagger_dialog, db_name=db_name)
+
     is_async = False
     try:
         tool_attr = getattr(tools, tool.name, globals().get(tool.name, None))
@@ -102,16 +111,11 @@ async def run_tool(
             skip_default_params=skip_default_params,
         )
     logger.info(f"\n\nCalling {tool.name} with messages: {dialog.messages}\n\n")
-    if inspect.iscoroutinefunction(creator.create):
-        creator_res = await creator.create(
-            **dialog_to_kwargs(dialog=dialog),
-            response_model=tool_type,  # type: ignore
-        )
-    else:
-        creator_res = creator.create(
-            **dialog_to_kwargs(dialog=dialog),
-            response_model=tool_type,  # type: ignore
-        )
+    creator = creator or create_creator(model_name=dialog.model_name)
+    creator_res = creator.create(
+        **dialog_to_kwargs(dialog=dialog),
+        response_model=tool_type,  # type: ignore
+    )
     logger.info(f"{tool.name} creator_res: {creator_res}")
     if isinstance(creator_res, BaseModel):
         if is_async:
@@ -125,14 +129,16 @@ async def run_tool(
     logger.success(f"{tool.name} result: {res}")
     if isinstance(res, Dialog):
         return res
-    dialog = add_message(dialog=dialog, message=assistant_message(content=str(res)), tag_messages=tag_messages)
+    dialog = add_message(dialog=dialog, message=assistant_message(content=str(res)), tagger_dialog=tagger_dialog)
     await save_dialog(dialog=dialog, db_name=db_name)
     return dialog
 
 
 async def run_selected_tool(
-    db_name: str, creator: Instructor | AsyncInstructor, dialog: Dialog, tool: Tool
+    db_name: str, dialog: UUID4 | Dialog | str, tool: Tool, creator: Instructor | AsyncInstructor | None = None
 ) -> Dialog:
+    dialog = await load_dialog(dialog=dialog, db_name=db_name)
+    creator = creator or create_creator(model_name=dialog.model_name)
     if tool.name.lower() == "ask_user":
         dialog = await run_ask_user(dialog=dialog, tool=tool, db_name=db_name)
     elif tool.name.lower() == "call_ai":
@@ -142,16 +148,10 @@ async def run_selected_tool(
     return dialog
 
 
-async def run_next_tool(db_name: str, creator: Instructor | AsyncInstructor, dialog: Dialog) -> Dialog:
-    next_tool = await get_next_tool(dialog=dialog, db_name=db_name)
-    if next_tool is None:
-        return dialog
-    return await run_selected_tool(db_name=db_name, creator=creator, dialog=dialog, tool=next_tool.tool)
-
-
 async def new_task(
-    db_name: str, dialog: Dialog, task: str, available_tools: list[str] | set[str] | None = None
+    db_name: str, dialog: UUID4 | Dialog | str, task: str, available_tools: list[str] | set[str] | None = None
 ) -> Dialog:
+    dialog = await load_dialog(dialog=dialog, db_name=db_name)
     available_tools = available_tools or []
     tools_info = "\n\n".join(
         [
@@ -170,12 +170,16 @@ async def new_task(
 
 async def run_tools(
     db_name: str,
-    creator: Instructor | AsyncInstructor,
-    dialog: Dialog,
-    continue_dialog: bool = True,
+    dialog: UUID4 | Dialog | str,
+    creator: Instructor | AsyncInstructor | None = None,
     available_tools: list[str] | set[str] | None = None,
-    tag_messages: bool = TAG_MESSAGES,
+    tagger_dialog: UUID4 | Dialog | None = None,
+    continue_dialog: bool = True,
 ) -> Dialog:
+    dialog = await load_dialog(dialog=dialog, db_name=db_name)
+    creator = creator or create_creator(model_name=dialog.model_name)
+    if tagger_dialog is not None:
+        tagger_dialog = await load_dialog(dialog=tagger_dialog, db_name=db_name)
     while True:
         next_tool = await get_next_tool(dialog=dialog, db_name=db_name)
         logger.info(f"next_tool: {next_tool}")
@@ -205,7 +209,7 @@ async def run_tools(
                 res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
                 logger.success(f"ai response: {res}")
                 dialog = add_message(
-                    dialog=dialog, message=assistant_message(content=res), tag_messages=tag_messages
+                    dialog=dialog, message=assistant_message(content=res), tagger_dialog=tagger_dialog
                 )
                 await save_dialog(dialog=dialog, db_name=db_name)
             seq += 1
