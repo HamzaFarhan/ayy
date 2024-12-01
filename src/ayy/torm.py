@@ -34,7 +34,7 @@ async def init_db(db_names: list[str] | str = DEFAULT_DB_NAME, app_names: list[s
     await Tortoise.generate_schemas()
 
 
-async def get_next_tool(
+async def get_next_dialog_tool(
     dialog: UUID4 | Dialog, db_name: str = DEFAULT_DB_NAME, position: int | None = None
 ) -> ToolWithPosition | None:
     dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
@@ -50,7 +50,7 @@ async def get_next_tool(
     return ToolWithPosition(position=dialog_tools.position, tool=Tool(**tool_model.model_dump()))
 
 
-async def get_tools(
+async def get_dialog_tools(
     dialog: UUID4 | Dialog, db_name: str = DEFAULT_DB_NAME, used: bool = False
 ) -> list[ToolWithPosition]:
     dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
@@ -65,11 +65,12 @@ async def get_tools(
     ]
 
 
-async def add_tools(
+async def add_dialog_tools(
     dialog: UUID4 | Dialog,
     tools: list[Tool] | Tool,
     db_name: str = DEFAULT_DB_NAME,
     position: int | None = None,
+    replace_all: bool = False,
 ) -> None:
     tools = [tools] if isinstance(tools, Tool) else tools
     conn = connections.get(db_name)
@@ -77,26 +78,22 @@ async def add_tools(
     async with in_transaction():
         conn = connections.get(db_name)
         dialog_tools = ToolUsage.all(using_db=conn).filter(dialog_id=dialog_id)
-        query = dialog_tools.order_by("-position")
-        logger.info(f"About to execute query: {query.sql()}")
-        try:
+        if replace_all:
+            await dialog_tools.delete()
+            start_position = 1
+        else:
+            query = dialog_tools.order_by("-position")
             latest_tool = await query.first()
-            logger.info(f"Query completed, latest_tool: {latest_tool}")
-        except Exception as e:
-            logger.error(f"Error in query execution: {str(e)}")
-            logger.error(f"Current connection: {conn}")
-            raise
-
-        if latest_tool is None:
-            latest_position = 0
-        else:
-            latest_position = latest_tool.position
-        logger.info(f"latest_position: {latest_position}")
-        if position is not None:
-            await dialog_tools.filter(position__gte=position).update(position=F("position") + len(tools))
-            start_position = position
-        else:
-            start_position = latest_position + 1
+            if latest_tool is None:
+                latest_position = 0
+            else:
+                latest_position = latest_tool.position
+            logger.info(f"latest_position: {latest_position}")
+            if position is not None:
+                await dialog_tools.filter(position__gte=position).update(position=F("position") + len(tools))
+                start_position = position
+            else:
+                start_position = latest_position + 1
         for i, tool in enumerate(tools, start=start_position):
             logger.info(f"tool: {tool}")
             tool_obj, _ = await DBTool.get_or_create(defaults=tool.model_dump(), using_db=conn, id=tool.id)
@@ -112,25 +109,19 @@ async def set_tool_used(tool: Tool, dialog: UUID4 | Dialog, db_name: str = DEFAU
     )
 
 
-async def save_dialog(dialog: Dialog, dialog_name: str = "", db_name: str = DEFAULT_DB_NAME) -> None:
+async def save_dialog(dialog: Dialog, db_name: str = DEFAULT_DB_NAME) -> None:
     conn = connections.get(db_name)
-    await DBDialog.update_or_create(
-        defaults={"dialog_name": dialog_name, **dialog.model_dump()}, using_db=conn, id=dialog.id
-    )
+    await DBDialog.update_or_create(defaults=dialog.model_dump(), using_db=conn, id=dialog.id)
 
 
-async def load_dialog(dialog: UUID4 | Dialog | str, db_name: str = DEFAULT_DB_NAME) -> Dialog:
+async def load_dialog(dialog: UUID4 | str | Dialog, db_name: str = DEFAULT_DB_NAME) -> Dialog:
     if isinstance(dialog, Dialog):
         return dialog
     conn = connections.get(db_name)
     dialog_model = pydantic_model_creator(DBDialog)
-    if isinstance(dialog, str):
-        dialog_obj, _ = await DBDialog.get_or_create(dialog_name=dialog, using_db=conn)
-        if dialog_obj is None:
-            raise ValueError(f"Dialog with name {dialog} not found")
-    else:
-        dialog_obj, _ = await DBDialog.get_or_create(id=dialog, using_db=conn)
-        if dialog_obj is None:
-            raise ValueError(f"Dialog with id {dialog} not found")
+    kwargs = {"name": dialog} if isinstance(dialog, str) else {"id": dialog}
+    dialog_obj, created = await DBDialog.get_or_create(defaults=None, using_db=conn, **kwargs)
+    if created:
+        logger.warning(f"Dialog with query params {kwargs} not found, created new one")
     dialog_model = await dialog_model.from_tortoise_orm(dialog_obj)
     return Dialog(**dialog_model.model_dump())

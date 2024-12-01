@@ -22,7 +22,7 @@ class Dialog(models.Model):
     messages = fields.JSONField(default=list)
     model_name = fields.CharField(max_length=255, default=MODEL_NAME.value)
     creation_config = fields.JSONField(default=dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS))
-    dialog_name = fields.CharField(max_length=255, default="")
+    name = fields.CharField(max_length=255, default="",)
 
     class Meta:  # type: ignore
         app = DEFAULT_APP_NAME

@@ -205,6 +205,7 @@ class Dialog(BaseModel):
     messages: Messages = Field(default_factory=list)
     model_name: ModelName = MODEL_NAME
     creation_config: dict = dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
+    name: str = ""
 
 
 def dialog_to_kwargs(dialog: Dialog, trimmed_len: int = TRIMMED_LEN) -> dict:
@@ -280,9 +281,12 @@ TAGGER_DIALOG = Dialog(
             assistant="reasoning: The trip is temporary but having family in New York is permanent information. tags: ['RECALL', 'CORE']",
         ),
     ],
+    name="tagger_dialog",
 )
 
-DEFAULT_DIALOG = Dialog(system=Path("src/ayy/selector_task.txt").read_text(), model_name=MODEL_NAME)
+DEFAULT_DIALOG = Dialog(
+    system=Path("src/ayy/selector_task.txt").read_text(), model_name=MODEL_NAME, name="default_dialog"
+)
 
 
 def add_message(
