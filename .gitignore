@@ -9,6 +9,7 @@ wheels/
 # Virtual environments
 .venv
 footy_guide
+ping
 .vscode
 __pycache__
 *.sqlite*

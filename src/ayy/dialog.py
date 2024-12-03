@@ -75,6 +75,14 @@ Content = Annotated[Any, AfterValidator(load_content)]
 MessageType = dict[str, Content]
 
 
+class MessagePurpose(StrEnum):
+    CONVO = "convo"
+    TOOL = "tool"
+
+
+DEFAULT_MESSAGE_PURPOSE = MessagePurpose.CONVO
+
+
 def create_creator(model_name: ModelName = MODEL_NAME, use_async: bool = False) -> Instructor | AsyncInstructor:
     if "gpt" in model_name.lower():
         if use_async:
@@ -97,7 +105,9 @@ def create_creator(model_name: ModelName = MODEL_NAME, use_async: bool = False) 
     return client.chat.completions
 
 
-def chat_message(role: str, content: Content, template: Content = "") -> MessageType:
+def chat_message(
+    role: str, content: Content, template: Content = "", purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE
+) -> MessageType:
     if template:
         if not isinstance(content, dict):
             raise TypeError("When using template, content must be a dict.")
@@ -107,19 +117,25 @@ def chat_message(role: str, content: Content, template: Content = "") -> Message
             raise KeyError(f"Template {template} requires key {e} which was not found in content.")
     else:
         message_content = content
-    return {"role": role, "content": message_content}
+    return {"role": role, "content": message_content, "purpose": purpose}
 
 
-def system_message(content: Content, template: Content = "") -> MessageType:
-    return chat_message(role="system", content=content, template=template)
+def system_message(
+    content: Content, template: Content = "", purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE
+) -> MessageType:
+    return chat_message(role="system", content=content, template=template, purpose=purpose)
 
 
-def user_message(content: Content, template: Content = "") -> MessageType:
-    return chat_message(role="user", content=content, template=template)
+def user_message(
+    content: Content, template: Content = "", purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE
+) -> MessageType:
+    return chat_message(role="user", content=content, template=template, purpose=purpose)
 
 
-def assistant_message(content: Content, template: Content = "") -> MessageType:
-    return chat_message(role="assistant", content=content, template=template)
+def assistant_message(
+    content: Content, template: Content = "", purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE
+) -> MessageType:
+    return chat_message(role="assistant", content=content, template=template, purpose=purpose)
 
 
 def load_messages(messages: list[MessageType] | str | Path) -> list[MessageType]:
@@ -208,6 +224,14 @@ class Dialog(BaseModel):
     name: str = ""
 
 
+class DialogTool(BaseModel):
+    id: int
+    position: int
+    dialog_id: UUID4
+    tool: Tool
+    used: bool = False
+
+
 def dialog_to_kwargs(dialog: Dialog, trimmed_len: int = TRIMMED_LEN) -> dict:
     kwargs = messages_to_kwargs(
         messages=dialog.messages, system=dialog.system, model_name=dialog.model_name, trimmed_len=trimmed_len
@@ -244,44 +268,44 @@ class MemoryTag(Enum):
 
 class MemoryTags(BaseModel):
     reasoning: str
-    tags: list[Literal[*MemoryTag._member_names_]]  # type: ignore
+    memory_tags: list[Literal[*MemoryTag._member_names_]]  # type: ignore
 
-    @field_validator("tags")
+    @field_validator("memory_tags")
     @classmethod
-    def validate_tags(cls, v: list[str]) -> list[str]:
+    def validate_memory_tags(cls, v: list[str]) -> list[str]:
         return list(set(v) | {DEFAULT_TAG})
 
 
-TAGGER_DIALOG = Dialog(
+memory_tagger_dialog = Dialog(
     model_name=MODEL_NAME,
     system=f"Tag the latest message. Possible tags are {str(MemoryTag.__members__)}",
     messages=[
         *exchange(
             user="it's sunny today",
-            assistant="reasoning: This is current weather information that will change. tags: ['RECALL']",
+            assistant="reasoning: This is current weather information that will change. memory_tags: ['RECALL']",
         ),
         *exchange(
             user="I love sunny days",
-            assistant="reasoning: This expresses a general preference which is a permanent trait. tags: ['CORE']",
+            assistant="reasoning: This expresses a general preference which is a permanent trait. memory_tags: ['CORE']",
         ),
         *exchange(
             user="My name is Hamza",
-            assistant="reasoning: This is temporary identifying information. tags: ['RECALL']",
+            assistant="reasoning: This is temporary identifying information. memory_tags: ['RECALL']",
             feedback="My name is a permanent thing. The tag for permanent things should be CORE",
-            correction="reasoning: You're right - a name is permanent identifying information. Apologies, I made a mistake. tags: ['CORE']",
+            correction="reasoning: You're right - a name is permanent identifying information. Apologies, I made a mistake. memory_tags: ['CORE']",
         ),
         *exchange(
             user="I'm going to the store",
-            assistant="reasoning: This seems like a permanent activity. tags: ['CORE']",
+            assistant="reasoning: This seems like a permanent activity. memory_tags: ['CORE']",
             feedback="Going to the store is a temporary activity, not a permanent fact. It should be RECALL",
-            correction="reasoning: You're correct - this is a temporary activity. You're right, I apologize. tags: ['RECALL']",
+            correction="reasoning: You're correct - this is a temporary activity. You're right, I apologize. memory_tags: ['RECALL']",
         ),
         *exchange(
             user="I'm planning a trip to visit my family in New York",
-            assistant="reasoning: The trip is temporary but having family in New York is permanent information. tags: ['RECALL', 'CORE']",
+            assistant="reasoning: The trip is temporary but having family in New York is permanent information. memory_tags: ['RECALL', 'CORE']",
         ),
     ],
-    name="tagger_dialog",
+    name="memory_tagger_dialog",
 )
 
 DEFAULT_DIALOG = Dialog(
@@ -294,26 +318,27 @@ def add_message(
     role: str = "user",
     content: Content = "",
     template: Content = "",
+    purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE,
     message: MessageType | None = None,
-    tagger_dialog: Dialog | None = None,
+    memory_tagger_dialog: Dialog | None = None,
     tagger_trimmed_len: int = TRIMMED_LEN,
 ) -> Dialog:
     if content is None:
         return dialog
-    message = message or chat_message(role=role, content=content, template=template)
-    if tagger_dialog is not None:
+    message = message or chat_message(role=role, content=content, template=template, purpose=purpose)
+    if memory_tagger_dialog is not None:
         try:
-            tagger_dialog.messages += dialog.messages + [message]
-            creator = create_creator(model_name=tagger_dialog.model_name)
-            tags: MemoryTags = creator.create(
-                **dialog_to_kwargs(dialog=tagger_dialog, trimmed_len=tagger_trimmed_len),
+            memory_tagger_dialog.messages += dialog.messages + [message]
+            creator = create_creator(model_name=memory_tagger_dialog.model_name)
+            memory_tags: MemoryTags = creator.create(
+                **dialog_to_kwargs(dialog=memory_tagger_dialog, trimmed_len=tagger_trimmed_len),
                 response_model=MemoryTags,  # type: ignore
             )
         except Exception:
             logger.exception(
                 f"Could not add tag to message: {message['content'][:100]}\nDefaulting to {DEFAULT_TAG}"
             )
-            tags = MemoryTags(reasoning="", tags=[DEFAULT_TAG])
-        message["tags"] = tags.tags
+            memory_tags = MemoryTags(reasoning="", memory_tags=[DEFAULT_TAG])
+        message["memory_tags"] = memory_tags.memory_tags
     dialog.messages.append(message)
     return dialog

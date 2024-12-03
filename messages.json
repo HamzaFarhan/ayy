@@ -1,0 +1,40 @@
+[
+    {
+        "role": "user",
+        "content": "Available tools for this task:\nTool 1:\n{'name': 'ask_user', 'signature': 'ask_user(prompt: str) -> str', 'docstring': 'Prompt the user for a response'}\n\nTool 2:\n{'name': 'call_ai', 'signature': 'call_ai(inputs: Any) -> Any', 'docstring': 'Not a pre-defined tool.'}\n\nTool 3:\n{'name': 'crawl_url', 'signature': 'crawl_url(url: str, max_depth: int = 2, max_links: int = 5, same_domain_only: bool = True, prefixes: list[str] | None = None) -> dict', 'docstring': 'Recursively crawl starting from a URL up to a specified depth.\\n\\nArgs:\\n    url: The URL to start crawling from\\n    max_depth: Maximum depth of recursion (default: 2)\\n    max_links: Maximum number of links to follow (default: 100)\\n    same_domain_only: Only follow links within the same domain (default: True)\\n    prefixes: List of prefixes to follow (default: None). So only links starting with these prefixes will be followed. If same_domain_only is True, it will be automatically added.'}\n\nTool 4:\n{'name': 'download_video', 'signature': 'download_video(url: str) -> str', 'docstring': 'download video from url and return the local path'}\n\nTool 5:\n{'name': 'get_weather', 'signature': \"get_weather(day: Literal['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'], location: str) -> str\", 'docstring': 'get the weather at a day in a location'}\n\nTool 6:\n{'name': 'list_available_grounds', 'signature': 'list_available_grounds(location: str) -> list[str]', 'docstring': 'list all available grounds in a location'}"
+    },
+    { "role": "user", "content": "list the grounds in manchester" },
+    { "role": "assistant", "content": "None" },
+    { "role": "user", "content": "location: \"Manchester\"" },
+    {
+        "role": "assistant",
+        "content": "['The Old Trafford', 'The Etihad Stadium', 'The Maine Road']"
+    },
+    {
+        "role": "user",
+        "content": "The tool `list_available_grounds` with location set to Manchester returned the following list: {list_available_grounds_result}.  Format this list into a user-friendly response.  For example, you could present the list as a numbered or bulleted list."
+    },
+    {
+        "role": "assistant",
+        "content": "Available grounds in Manchester:\n\n1. The Old Trafford\n2. The Etihad Stadium\n3. The Maine Road"
+    },
+    {
+        "role": "user",
+        "content": "Available tools for this task:\nTool 1:\n{'name': 'ask_user', 'signature': 'ask_user(prompt: str) -> str', 'docstring': 'Prompt the user for a response'}\n\nTool 2:\n{'name': 'call_ai', 'signature': 'call_ai(inputs: Any) -> Any', 'docstring': 'Not a pre-defined tool.'}\n\nTool 3:\n{'name': 'crawl_url', 'signature': 'crawl_url(url: str, max_depth: int = 2, max_links: int = 5, same_domain_only: bool = True, prefixes: list[str] | None = None) -> dict', 'docstring': 'Recursively crawl starting from a URL up to a specified depth.\\n\\nArgs:\\n    url: The URL to start crawling from\\n    max_depth: Maximum depth of recursion (default: 2)\\n    max_links: Maximum number of links to follow (default: 100)\\n    same_domain_only: Only follow links within the same domain (default: True)\\n    prefixes: List of prefixes to follow (default: None). So only links starting with these prefixes will be followed. If same_domain_only is True, it will be automatically added.'}\n\nTool 4:\n{'name': 'download_video', 'signature': 'download_video(url: str) -> str', 'docstring': 'download video from url and return the local path'}\n\nTool 5:\n{'name': 'get_weather', 'signature': \"get_weather(day: Literal['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'], location: str) -> str\", 'docstring': 'get the weather at a day in a location'}\n\nTool 6:\n{'name': 'list_available_grounds', 'signature': 'list_available_grounds(location: str) -> list[str]', 'docstring': 'list all available grounds in a location'}"
+    },
+    { "role": "user", "content": "hows the weather there on wed?" },
+    { "role": "assistant", "content": "None" },
+    {
+        "role": "user",
+        "content": "What is the weather in Manchester on Wednesday?"
+    },
+    { "role": "assistant", "content": "It's cloudy" },
+    {
+        "role": "user",
+        "content": "The tool `list_available_grounds` with location set to Manchester returned the following list: {list_available_grounds_result}.  Format this list into a user-friendly response.  For example, you could present the list as a numbered or bulleted list."
+    },
+    {
+        "role": "assistant",
+        "content": "Available grounds in Manchester:\n\n1. The Old Trafford\n2. The Etihad Stadium\n3. The Maine Road"
+    }
+]
