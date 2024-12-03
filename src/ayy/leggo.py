@@ -9,8 +9,6 @@ from pydantic import UUID4, BaseModel, create_model
 
 from ayy import tools
 from ayy.dialog import (
-    DEFAULT_PROMPT,
-    DEFAULT_TOOL,
     Dialog,
     MessagePurpose,
     ModelName,
@@ -34,6 +32,8 @@ from ayy.torm import (
 MODEL_NAME = ModelName.GEMINI_FLASH
 PINNED_TOOLS = set(["ask_user", "call_ai"])
 CONTINUE_DIALOG = True
+DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
+DEFAULT_TOOL = Tool(reasoning="", name="call_ai", prompt=DEFAULT_PROMPT)
 
 
 async def run_ask_user(dialog: Dialog, tool: Tool, db_name: str) -> Dialog:
@@ -74,13 +74,16 @@ async def run_call_ai(
     return dialog
 
 
-async def get_selected_tools(db_name: str, dialog: UUID4 | str | Dialog, selected_tools: list[Tool]):
-    """
-    Get and push a list of selected tools for the task
-    It will also add an ask_user at the start to approve the tools. You don't need to add it yourself.
-    """
+async def get_selected_tools(db_name: str, dialog: UUID4 | str | Dialog, selected_tools: list[Tool]) -> Dialog:
+    "Get and push a list of selected tools for the task"
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
+    tools_str = "\n".join([f"Tool {i}:\n{tool}" for i, tool in enumerate(selected_tools, start=1)])
+    dialog = add_message(
+        dialog=dialog, message=assistant_message(f"<selected_tools>\n{tools_str}\n</selected_tools>")
+    )
+    await save_dialog(dialog=dialog, db_name=db_name)
     await add_dialog_tools(dialog=dialog, tools=selected_tools, db_name=db_name)
+    return dialog
 
 
 async def run_tool(
@@ -198,21 +201,20 @@ async def run_tools(
         while True:
             if seq % 2 == 0 or last_used_tool.name == "call_ai":
                 user_input = input("('q' or 'exit' or 'quit' to quit) > ")
-                if user_input.lower() in ["q", "exit", "quit"]:
+                if user_input.lower().strip() in ["q", "exit", "quit"]:
                     return dialog
-                dialog = await run_tools(
+                dialog = await new_task(
                     db_name=db_name,
-                    creator=creator,
-                    dialog=await new_task(
-                        db_name=db_name, dialog=dialog, task=user_input, available_tools=available_tools
-                    ),
+                    dialog=dialog,
+                    task=user_input,
+                    available_tools=available_tools,
                     continue_dialog=False,
                 )
             else:
-                await add_dialog_tools(dialog=dialog, tools=[DEFAULT_TOOL], db_name=db_name)
+                await add_dialog_tools(dialog=dialog, tools=DEFAULT_TOOL, db_name=db_name, used=True)
                 res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
                 logger.success(f"ai response: {res}")
-                logger.info(f"In run_tools, adding assistant message: {res}")
+                logger.info(f"adding assistant message: {res}")
                 dialog = add_message(
                     dialog=dialog,
                     message=assistant_message(content=res),
@@ -239,7 +241,7 @@ async def new_task(
     if task_name and dialog.name != task_name:
         dialog.id = uuid4()
         dialog.name = task_name
-    available_tools = available_tools or []
+    available_tools = (set(available_tools or []) | set(dialog.available_tools or [])) or []
     tools_info = "\n\n".join(
         [
             f"Tool {i}:\n{get_function_info(func)}"

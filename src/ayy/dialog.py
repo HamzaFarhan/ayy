@@ -16,12 +16,13 @@ from loguru import logger
 from openai import AsyncOpenAI, OpenAI
 from pydantic import UUID4, AfterValidator, BaseModel, Field, field_validator
 
+from ayy.prompts import TOOL_SELECTION_SYSTEM
+
 TRIMMED_LEN = 40
 MERGE_JOINER = "\n\n--- Next Message ---\n\n"
 TEMPERATURE = 0.1
 MAX_TOKENS = 3000
 DEFAULT_TAG = "RECALL"
-DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
 
 
 class Tool(BaseModel):
@@ -42,9 +43,6 @@ class Tool(BaseModel):
 
     def __str__(self) -> str:
         return f"Reasoning: {self.reasoning}\nName: {self.name}\nPrompt: {self.prompt}"
-
-
-DEFAULT_TOOL = Tool(reasoning="", name="call_ai", prompt=DEFAULT_PROMPT)
 
 
 class ModelName(StrEnum):
@@ -222,6 +220,14 @@ class Dialog(BaseModel):
     model_name: ModelName = MODEL_NAME
     creation_config: dict = dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
     name: str = ""
+    available_tools: list[str] = Field(default_factory=list)
+
+    @field_validator("system")
+    @classmethod
+    def validate_system(cls, v: Content) -> Content:
+        return (
+            v.strip() + f"\n\n<tool_selection_guidelines>\n{TOOL_SELECTION_SYSTEM}\n</tool_selection_guidelines>"
+        )
 
 
 class DialogTool(BaseModel):
@@ -274,43 +280,6 @@ class MemoryTags(BaseModel):
     @classmethod
     def validate_memory_tags(cls, v: list[str]) -> list[str]:
         return list(set(v) | {DEFAULT_TAG})
-
-
-memory_tagger_dialog = Dialog(
-    model_name=MODEL_NAME,
-    system=f"Tag the latest message. Possible tags are {str(MemoryTag.__members__)}",
-    messages=[
-        *exchange(
-            user="it's sunny today",
-            assistant="reasoning: This is current weather information that will change. memory_tags: ['RECALL']",
-        ),
-        *exchange(
-            user="I love sunny days",
-            assistant="reasoning: This expresses a general preference which is a permanent trait. memory_tags: ['CORE']",
-        ),
-        *exchange(
-            user="My name is Hamza",
-            assistant="reasoning: This is temporary identifying information. memory_tags: ['RECALL']",
-            feedback="My name is a permanent thing. The tag for permanent things should be CORE",
-            correction="reasoning: You're right - a name is permanent identifying information. Apologies, I made a mistake. memory_tags: ['CORE']",
-        ),
-        *exchange(
-            user="I'm going to the store",
-            assistant="reasoning: This seems like a permanent activity. memory_tags: ['CORE']",
-            feedback="Going to the store is a temporary activity, not a permanent fact. It should be RECALL",
-            correction="reasoning: You're correct - this is a temporary activity. You're right, I apologize. memory_tags: ['RECALL']",
-        ),
-        *exchange(
-            user="I'm planning a trip to visit my family in New York",
-            assistant="reasoning: The trip is temporary but having family in New York is permanent information. memory_tags: ['RECALL', 'CORE']",
-        ),
-    ],
-    name="memory_tagger_dialog",
-)
-
-DEFAULT_DIALOG = Dialog(
-    system=Path("src/ayy/selector_task.txt").read_text(), model_name=MODEL_NAME, name="default_dialog"
-)
 
 
 def add_message(

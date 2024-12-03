@@ -46,7 +46,8 @@ async def get_next_dialog_tool(
     dialog: UUID4 | Dialog, db_name: str = DEFAULT_DB_NAME, position: int | None = None
 ) -> DialogTool | None:
     dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
-    dialog_tools = DBDialogTool.all(using_db=connections.get(db_name)).filter(dialog_id=dialog_id)
+    dialog_tools = DBDialogTool.filter(dialog_id=dialog_id).using_db(connections.get(db_name))
+    # dialog_tools = DBDialogTool.all(using_db=connections.get(db_name)).filter(dialog_id=dialog_id)
     if position is not None:
         dialog_tools = await dialog_tools.filter(position=position).first()
     else:
@@ -63,10 +64,13 @@ async def get_dialog_tools(
 ) -> list[DialogTool]:
     dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
     dialog_tools = await pydantic_queryset_creator(DBDialogTool).from_queryset(
-        DBDialogTool.all(using_db=connections.get(db_name))
-        .filter(dialog_id=dialog_id, used=used)
-        .order_by("position")
+        DBDialogTool.filter(dialog_id=dialog_id, used=used).using_db(connections.get(db_name))
     )
+    # dialog_tools = await pydantic_queryset_creator(DBDialogTool).from_queryset(
+    #     DBDialogTool.all(using_db=connections.get(db_name))
+    #     .filter(dialog_id=dialog_id, used=used)
+    #     .order_by("position")
+    # )
     return [db_dialog_tool_to_dialog_tool(db_dialog_tool=tool) for tool in dialog_tools.model_dump()]
 
 
@@ -75,6 +79,7 @@ async def add_dialog_tools(
     tools: list[Tool] | Tool,
     db_name: str = DEFAULT_DB_NAME,
     position: int | None = None,
+    used: bool = False,
     replace_all: bool = False,
 ) -> None:
     tools = [tools] if isinstance(tools, Tool) else tools
@@ -82,7 +87,8 @@ async def add_dialog_tools(
     dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
     async with in_transaction():
         conn = connections.get(db_name)
-        dialog_tools = DBDialogTool.all(using_db=conn).filter(dialog_id=dialog_id)
+        dialog_tools = DBDialogTool.filter(dialog_id=dialog_id).using_db(conn)
+        # dialog_tools = DBDialogTool.all(using_db=conn).filter(dialog_id=dialog_id)
         if replace_all:
             await dialog_tools.delete()
             start_position = 1
@@ -102,7 +108,11 @@ async def add_dialog_tools(
         for i, tool in enumerate(tools, start=start_position):
             logger.info(f"tool: {tool}")
             await DBDialogTool.create(
-                using_db=conn, dialog_id=dialog_id, position=i, **tool.model_dump(include=set(TOOL_FIELDS))
+                using_db=conn,
+                dialog_id=dialog_id,
+                position=i,
+                used=used,
+                **tool.model_dump(include=set(TOOL_FIELDS)),
             )
 
 
@@ -112,9 +122,16 @@ async def toggle_dialog_tool_usage(dialog_tool_id: int, db_name: str = DEFAULT_D
     await tool.save()
 
 
-async def save_dialog(dialog: Dialog, db_name: str = DEFAULT_DB_NAME) -> None:
+async def save_dialog(dialog: Dialog, db_name: str = DEFAULT_DB_NAME, overwrite: bool = True) -> None:
     conn = connections.get(db_name)
-    await DBDialog.update_or_create(defaults=dialog.model_dump(), using_db=conn, id=dialog.id)
+    existing_dialog = await DBDialog.filter(name=dialog.name).using_db(conn).first()
+    if existing_dialog is None:
+        existing_dialog = await DBDialog.filter(id=dialog.id).using_db(conn).first()
+    if existing_dialog is None:
+        await DBDialog.create(using_db=conn, **dialog.model_dump())
+    elif overwrite:
+        existing_dialog = await existing_dialog.update_from_dict(dialog.model_dump(exclude={"id"}))
+        await existing_dialog.save()
 
 
 async def load_dialog(dialog: UUID4 | str | Dialog, db_name: str = DEFAULT_DB_NAME) -> Dialog:

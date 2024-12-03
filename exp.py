@@ -2,7 +2,8 @@ from loguru import logger
 from pydantic import UUID4
 from tortoise import run_async
 
-from ayy.dialog import DEFAULT_DIALOG, Dialog, ModelName, memory_tagger_dialog
+from ayy.dialog import Dialog, ModelName
+from ayy.dialogs import MEMORY_TAGGER_DIALOG
 from ayy.leggo import new_task
 from ayy.torm import init_db, save_dialog
 
@@ -26,8 +27,10 @@ async def _new_task(
 
 async def setup():
     await init_db(db_names=DB_NAME, app_names=APP_NAME)
-    await save_dialog(dialog=DEFAULT_DIALOG, db_name=DB_NAME)
-    await save_dialog(dialog=memory_tagger_dialog, db_name=DB_NAME)
+    await save_dialog(
+        dialog=Dialog(model_name=MODEL_NAME, name="default_dialog"), db_name=DB_NAME, overwrite=False
+    )
+    await save_dialog(dialog=MEMORY_TAGGER_DIALOG, db_name=DB_NAME, overwrite=False)
 
 
 if __name__ == "__main__":
@@ -35,5 +38,5 @@ if __name__ == "__main__":
     run_async(setup())
     logger.success("Setup done")
     logger.info("Running task")
-    run_async(_new_task(dialog="default_dialog", task="list the grounds in manchester", task_name="list_grounds"))
+    run_async(_new_task(dialog="list_grounds", task="list the grounds in london", task_name="list_grounds"))
     logger.success("Task done")
