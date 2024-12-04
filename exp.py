@@ -15,9 +15,18 @@ APP_NAME = "tasks"
 
 
 async def _new_task(
-    dialog: UUID4 | str | Dialog, task: str, memory_tagger_dialog: UUID4 | str | Dialog | None = None
+    dialog: UUID4 | str | Dialog,
+    task: str,
+    memory_tagger_dialog: UUID4 | str | Dialog | None = None,
+    available_tools: list[str] | set[str] | None = None,
 ) -> Dialog:
-    return await new_task(db_name=DB_NAME, dialog=dialog, task=task, memory_tagger_dialog=memory_tagger_dialog)
+    return await new_task(
+        db_name=DB_NAME,
+        dialog=dialog,
+        task=task,
+        memory_tagger_dialog=memory_tagger_dialog,
+        available_tools=available_tools,
+    )
 
 
 async def setup():
@@ -35,7 +44,11 @@ if __name__ == "__main__":
     logger.info("Running task")
     run_async(
         _new_task(
-            dialog="list_grounds", task="list the grounds in london", memory_tagger_dialog=MEMORY_TAGGER_DIALOG
+            dialog="list_grounds",
+            # task="list the grounds in london",
+            task="list the grounds in manchester and the weather there on tue",
+            memory_tagger_dialog=MEMORY_TAGGER_DIALOG,
+            available_tools=["list_available_grounds_and_format_response_and_get_weather_and_format_response"],
         )
     )
     logger.success("Task done")

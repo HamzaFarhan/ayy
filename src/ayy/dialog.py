@@ -218,9 +218,9 @@ def messages_to_kwargs(
 
 
 class DialogToolSignature(BaseModel):
-    name: str
-    signature: str
-    docstring: str
+    name: str = ""
+    signature: str = ""
+    docstring: str = ""
 
 
 class Dialog(BaseModel):
@@ -230,7 +230,7 @@ class Dialog(BaseModel):
     model_name: ModelName = MODEL_NAME
     creation_config: dict = dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
     name: str = ""
-    dialog_tool_signature: DialogToolSignature | None = None
+    dialog_tool_signature: dict = Field(default_factory=dict)
     available_tools: list[str] = Field(default_factory=list)
 
     @field_validator("system")
@@ -260,7 +260,7 @@ def dialog_to_kwargs(dialog: Dialog, messages: Messages | None = None, trimmed_l
         kwargs["generation_config"] = dialog.creation_config
     else:
         kwargs.update(dialog.creation_config)
-    logger.info(f"kwargs: {kwargs}")
+    # logger.info(f"KWARGS: {kwargs}")
     return kwargs
 
 

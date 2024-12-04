@@ -9,14 +9,17 @@ from pydantic import create_model
 from ayy.utils import deindent
 
 
-def get_functions_from_module(module, exclude: list[str] | None = None):
-    exclude = exclude or []
+def get_functions_from_module(
+    module, exclude: list[str] | set[str] | None = None, include: list[str] | set[str] | None = None
+):
+    exclude = set(exclude) if exclude else set()
+    include = set(include) if include else set()
     return [
         x
         for x in inspect.getmembers(
             module, lambda member: inspect.isfunction(member) and member.__module__ == module.__name__
         )
-        if not x[0].startswith("_") and x[0] not in exclude
+        if not x[0].startswith("_") and x[0] not in exclude and (x[0] in include if include else True)
     ]
 
 

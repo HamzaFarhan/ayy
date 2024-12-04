@@ -96,7 +96,6 @@ async def get_selected_tools(db_name: str, dialog: UUID4 | str | Dialog, selecte
     dialog = add_message(
         dialog=dialog, message=assistant_message(f"<selected_tools>\n{tools_str}\n</selected_tools>")
     )
-    # dialog_signature = get_dialog_signature(dialog=dialog)
     await save_dialog(dialog=dialog, db_name=db_name)
     await add_dialog_tools(dialog=dialog, tools=selected_tools, db_name=db_name)
     return dialog
@@ -116,6 +115,7 @@ async def run_tool(
     dialog: UUID4 | str | Dialog,
     tool: Tool,
     tool_is_dialog: bool = False,
+    available_tools: list[str] | set[str] | None = None,
     creator: Instructor | AsyncInstructor | None = None,
     ignore_default_values: bool = False,
     skip_default_params: bool = False,
@@ -150,13 +150,13 @@ async def run_tool(
         if not tool_is_dialog
         else Task
     )
-    all_tools = get_functions_from_module(module=tools)
+    all_tools = available_tools or [tool_member[0] for tool_member in get_functions_from_module(module=tools)]
     if tool.name == "get_selected_tools" and len(all_tools) > 0:
         selected_tool = partial(get_selected_tools, db_name, dialog)
         tool_type = list[
             create_model(
                 "SelectedTool",
-                name=(Literal[*[tool_member[0] for tool_member in all_tools]], ...),  # type: ignore
+                name=(Literal[*all_tools], ...),  # type: ignore
                 __base__=Tool,
             )
         ]
@@ -167,7 +167,7 @@ async def run_tool(
             ignore_default_values=ignore_default_values,
             skip_default_params=skip_default_params,
         )
-    logger.info(f"\n\nCalling {tool.name} with messages: {dialog.messages}\n\n")
+    # logger.info(f"\n\nCalling {tool.name} with tool_type: {tool_type}\n\n")
     creator = creator or create_creator(model_name=dialog.model_name)
     creator_res = creator.create(
         **dialog_to_kwargs(dialog=dialog),
@@ -204,6 +204,7 @@ async def run_selected_tool(
     dialog: UUID4 | str | Dialog,
     tool: Tool,
     tool_is_dialog: bool = False,
+    available_tools: list[str] | set[str] | None = None,
     creator: Instructor | AsyncInstructor | None = None,
 ) -> Dialog:
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
@@ -214,7 +215,12 @@ async def run_selected_tool(
         dialog = await run_call_ai(creator=creator, dialog=dialog, tool=tool, db_name=db_name)
     else:
         dialog = await run_tool(
-            db_name=db_name, creator=creator, dialog=dialog, tool=tool, tool_is_dialog=tool_is_dialog
+            db_name=db_name,
+            creator=creator,
+            dialog=dialog,
+            tool=tool,
+            tool_is_dialog=tool_is_dialog,
+            available_tools=available_tools,
         )
     return dialog
 
@@ -224,7 +230,7 @@ async def run_tools(
     dialog: UUID4 | str | Dialog,
     creator: Instructor | AsyncInstructor | None = None,
     available_tools: list[str] | set[str] | None = None,
-    dialogs: list[str] | None = None,
+    dialogs: list[str] | set[str] | None = None,
     memory_tagger_dialog: UUID4 | str | Dialog | None = None,
     continue_dialog: bool = CONTINUE_DIALOG,
 ) -> Dialog:
@@ -243,6 +249,7 @@ async def run_tools(
             dialog=dialog,
             tool=next_tool.tool,
             tool_is_dialog=next_tool.tool.name in dialogs if dialogs else False,
+            available_tools=available_tools,
         )
         await toggle_dialog_tool_usage(dialog_tool_id=next_tool.id, db_name=db_name)
     used_tools = await get_dialog_tools(dialog=dialog, db_name=db_name, used=True)
@@ -258,7 +265,7 @@ async def run_tools(
                     db_name=db_name,
                     dialog=dialog,
                     task=user_input,
-                    available_tools=available_tools,
+                    # available_tools=available_tools,
                     continue_dialog=False,
                 )
             else:
@@ -295,14 +302,16 @@ async def new_task(
     dialog_names = []
     dialogs_as_tools = []
     for d in dialogs:
-        dialog_names.append(d.name)
-        dialogs_as_tools.append(f"Tool:\n{d.dialog_tool_signature}")
-    tools_list = [
-        f"Tool:\n{get_function_info(func)}"
-        for _, func in get_functions_from_module(module=tools)
-        if not available_tools or func.__name__ in set(available_tools) | PINNED_TOOLS
-    ] + dialogs_as_tools
-    tools_info = "\n\n".join(tools_list)
+        if d.name != dialog.name:
+            dialog_names.append(d.name)
+            dialogs_as_tools.append(f"Tool:\n{d.dialog_tool_signature}")
+    tool_names = []
+    tools_list = []
+    for _, func in get_functions_from_module(module=tools):
+        if not available_tools or func.__name__ in set(available_tools) | PINNED_TOOLS:
+            tool_names.append(func.__name__)
+            tools_list.append(f"Tool:\n{get_function_info(func)}")
+    tools_info = "\n\n".join(tools_list + dialogs_as_tools)
     dialog = add_message(
         dialog=dialog,
         message=user_message(content=f"Available tools for this task:\n{tools_info}", purpose=MessagePurpose.TOOL),
@@ -315,8 +324,8 @@ async def new_task(
         db_name=db_name,
         dialog=dialog,
         creator=creator,
-        available_tools=available_tools,
-        dialogs=dialog_names,
+        available_tools=set(tool_names) | set(dialog_names) | PINNED_TOOLS,
+        dialogs=set(dialog_names),
         memory_tagger_dialog=memory_tagger_dialog,
         continue_dialog=continue_dialog,
     )
