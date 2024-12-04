@@ -32,6 +32,7 @@ def get_weather(
     else:
         return "It's overcast"
 
+
 def list_available_grounds(location: str) -> list[str]:
     "list all available grounds in a location"
     if location.lower() == "blackpool":

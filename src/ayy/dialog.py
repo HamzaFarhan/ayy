@@ -46,7 +46,7 @@ class Tool(BaseModel):
 
 
 class ModelName(StrEnum):
-    GPT = "gpt-4o-2024-08-06"
+    GPT = "gpt-4o-2024-11-20"
     GPT_MINI = "gpt-4o-mini"
     HAIKU = "claude-3-haiku-latest"
     SONNET = "claude-3-5-sonnet-latest"
@@ -150,6 +150,10 @@ def load_messages(messages: list[MessageType] | str | Path) -> list[MessageType]
 Messages = Annotated[list[MessageType], AfterValidator(load_messages)]
 
 
+def get_last_message(messages: Messages, role: str = "assistant") -> MessageType | None:
+    return next((msg for msg in reversed(messages) if msg["role"] == role), None)
+
+
 def exchange(
     user: Content,
     assistant: Content,
@@ -213,6 +217,12 @@ def messages_to_kwargs(
     return kwargs
 
 
+class DialogToolSignature(BaseModel):
+    name: str
+    signature: str
+    docstring: str
+
+
 class Dialog(BaseModel):
     id: UUID4 = Field(default_factory=lambda: uuid4())
     system: Content = ""
@@ -220,6 +230,7 @@ class Dialog(BaseModel):
     model_name: ModelName = MODEL_NAME
     creation_config: dict = dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
     name: str = ""
+    dialog_tool_signature: DialogToolSignature | None = None
     available_tools: list[str] = Field(default_factory=list)
 
     @field_validator("system")

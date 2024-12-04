@@ -5,10 +5,12 @@ from tortoise.contrib.pydantic import pydantic_model_creator, pydantic_queryset_
 from tortoise.expressions import F
 from tortoise.transactions import in_transaction
 
+from ayy import tools as tools_module
 from ayy.db_models import DEFAULT_APP_NAME
 from ayy.db_models import Dialog as DBDialog
 from ayy.db_models import DialogTool as DBDialogTool
-from ayy.dialog import Dialog, DialogTool, Tool
+from ayy.dialog import Dialog, DialogTool, DialogToolSignature, Tool
+from ayy.func_utils import get_functions_from_module
 
 DEFAULT_DB_NAME = "tasks_db"
 TOOL_FIELDS = ["reasoning", "name", "prompt"]
@@ -56,6 +58,13 @@ async def get_next_dialog_tool(
     tool_model = pydantic_model_creator(DBDialogTool)
     tool_model = await tool_model.from_tortoise_orm(await dialog_tools)
     return db_dialog_tool_to_dialog_tool(db_dialog_tool=tool_model)
+
+
+async def get_dialogs_with_signatures(db_name: str = DEFAULT_DB_NAME) -> list[Dialog]:
+    dialogs = await pydantic_queryset_creator(DBDialog).from_queryset(
+        DBDialog.filter(dialog_tool_signature__not={}).using_db(connections.get(db_name))
+    )
+    return [Dialog(**dialog) for dialog in dialogs.model_dump()]
 
 
 async def get_dialog_tools(
@@ -121,15 +130,28 @@ async def toggle_dialog_tool_usage(dialog_tool_id: int, db_name: str = DEFAULT_D
     await tool.save()
 
 
-async def save_dialog(dialog: Dialog, db_name: str = DEFAULT_DB_NAME, overwrite: bool = True) -> None:
+async def save_dialog(
+    dialog: Dialog,
+    db_name: str = DEFAULT_DB_NAME,
+    dialog_tool_signature: DialogToolSignature | None = None,
+    overwrite: bool = True,
+) -> None:
     conn = connections.get(db_name)
+    dialog_dict = dialog.model_dump()
+    if dialog_tool_signature is not None and dialog_tool_signature.name not in [
+        f[0] for f in get_functions_from_module(tools_module)
+    ]:
+        dialog_dict["name"] = dialog_tool_signature.name
+        dialog_dict["dialog_tool_signature"] = dialog_tool_signature.model_dump()
     existing_dialog = await DBDialog.filter(name=dialog.name).using_db(conn).first()
     if existing_dialog is None:
         existing_dialog = await DBDialog.filter(id=dialog.id).using_db(conn).first()
     if existing_dialog is None:
-        await DBDialog.create(using_db=conn, **dialog.model_dump())
+        await DBDialog.create(using_db=conn, **dialog_dict)
     elif overwrite:
-        existing_dialog = await existing_dialog.update_from_dict(dialog.model_dump(exclude={"id"}))
+        existing_dialog = await existing_dialog.update_from_dict(
+            {k: v for k, v in dialog_dict.items() if k not in ["id", "dialog_id"]}
+        )
         await existing_dialog.save()
 
 

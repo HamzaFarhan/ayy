@@ -15,14 +15,9 @@ APP_NAME = "tasks"
 
 
 async def _new_task(
-    dialog: UUID4 | str | Dialog,
-    task: str,
-    task_name: str = "",
-    memory_tagger_dialog: UUID4 | str | Dialog | None = None,
+    dialog: UUID4 | str | Dialog, task: str, memory_tagger_dialog: UUID4 | str | Dialog | None = None
 ) -> Dialog:
-    return await new_task(
-        db_name=DB_NAME, dialog=dialog, task=task, task_name=task_name, memory_tagger_dialog=memory_tagger_dialog
-    )
+    return await new_task(db_name=DB_NAME, dialog=dialog, task=task, memory_tagger_dialog=memory_tagger_dialog)
 
 
 async def setup():
@@ -38,5 +33,9 @@ if __name__ == "__main__":
     run_async(setup())
     logger.success("Setup done")
     logger.info("Running task")
-    run_async(_new_task(dialog="list_grounds", task="list the grounds in london", task_name="list_grounds"))
+    run_async(
+        _new_task(
+            dialog="list_grounds", task="list the grounds in london", memory_tagger_dialog=MEMORY_TAGGER_DIALOG
+        )
+    )
     logger.success("Task done")

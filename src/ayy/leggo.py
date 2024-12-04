@@ -9,6 +9,7 @@ from pydantic import UUID4, BaseModel, create_model
 from ayy import tools
 from ayy.dialog import (
     Dialog,
+    DialogToolSignature,
     MessagePurpose,
     ModelName,
     Tool,
@@ -16,6 +17,7 @@ from ayy.dialog import (
     assistant_message,
     create_creator,
     dialog_to_kwargs,
+    get_last_message,
     user_message,
 )
 from ayy.dialogs import DIALOG_NAMER_DIALOG
@@ -23,6 +25,7 @@ from ayy.func_utils import function_to_type, get_function_info, get_functions_fr
 from ayy.torm import (
     add_dialog_tools,
     get_dialog_tools,
+    get_dialogs_with_signatures,
     get_next_dialog_tool,
     load_dialog,
     save_dialog,
@@ -36,21 +39,16 @@ DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the u
 DEFAULT_TOOL = Tool(reasoning="", name="call_ai", prompt=DEFAULT_PROMPT)
 
 
-class DialogToolSignature(BaseModel):
-    name: str
-    signature: str
-    docstring: str
-
-
-def name_dialog(dialog: Dialog) -> Dialog:
+def get_dialog_signature(dialog: Dialog) -> DialogToolSignature | None:
     namer = create_creator(model_name=DIALOG_NAMER_DIALOG.model_name)
     namer_res = namer.create(
         **dialog_to_kwargs(dialog=DIALOG_NAMER_DIALOG, messages=dialog.messages),
         response_model=DialogToolSignature,
     )
     logger.info(f"dialog signature: {namer_res}")
-    dialog.name = namer_res.name  # type: ignore
-    return dialog
+    if namer_res.name == "":  # type: ignore
+        return None
+    return namer_res  # type: ignore
 
 
 async def run_ask_user(dialog: Dialog, tool: Tool, db_name: str) -> Dialog:
@@ -98,16 +96,26 @@ async def get_selected_tools(db_name: str, dialog: UUID4 | str | Dialog, selecte
     dialog = add_message(
         dialog=dialog, message=assistant_message(f"<selected_tools>\n{tools_str}\n</selected_tools>")
     )
-    dialog = name_dialog(dialog=dialog)
+    # dialog_signature = get_dialog_signature(dialog=dialog)
     await save_dialog(dialog=dialog, db_name=db_name)
     await add_dialog_tools(dialog=dialog, tools=selected_tools, db_name=db_name)
     return dialog
+
+
+async def run_dialog_as_tool(db_name: str, dialog: UUID4 | str | Dialog, task: str) -> Dialog:
+    dialog = await new_task(db_name=db_name, dialog=dialog, task=task, continue_dialog=False)
+    return dialog
+
+
+class Task(BaseModel):
+    task: str
 
 
 async def run_tool(
     db_name: str,
     dialog: UUID4 | str | Dialog,
     tool: Tool,
+    tool_is_dialog: bool = False,
     creator: Instructor | AsyncInstructor | None = None,
     ignore_default_values: bool = False,
     skip_default_params: bool = False,
@@ -117,24 +125,31 @@ async def run_tool(
     if memory_tagger_dialog is not None:
         memory_tagger_dialog = await load_dialog(dialog=memory_tagger_dialog, db_name=db_name)
     is_async = False
-    try:
-        tool_map = getattr(tools, "tool_map", globals().get("tool_map", {}))
-        tool_attr = tool_map.get(tool.name, getattr(tools, tool.name, globals().get(tool.name, None)))
-        if tool_attr is None:
-            raise ValueError(f"Tool '{tool.name}' not found in tools module or current module")
-        if not inspect.isfunction(tool_attr):
-            raise ValueError(f"Tool '{tool.name}' is not a function.\nGot {type(tool_attr).__name__} instead")
-        selected_tool = tool_attr
-        is_async = inspect.iscoroutinefunction(tool_attr)
-    except AttributeError:
-        raise ValueError(f"Tool '{tool.name}' not found in tools module")
+    if tool_is_dialog:
+        selected_tool = partial(run_dialog_as_tool, db_name, await load_dialog(dialog=tool.name, db_name=db_name))
+        is_async = True
+    else:
+        try:
+            selected_tool = getattr(tools, tool.name, globals().get(tool.name, None))
+            if selected_tool is None:
+                raise ValueError(f"Tool '{tool.name}' not found in tools module or current module")
+            if not inspect.isfunction(selected_tool):
+                raise ValueError(
+                    f"Tool '{tool.name}' is not a function.\nGot {type(selected_tool).__name__} instead"
+                )
+            is_async = inspect.iscoroutinefunction(selected_tool)
+        except AttributeError:
+            raise ValueError(f"Tool '{tool.name}' not found in tools module")
     if tool.prompt:
         logger.info(f"adding user message: {tool.prompt}")
         message_purpose = MessagePurpose.CONVO if tool.name == "get_selected_tools" else MessagePurpose.TOOL
         dialog = add_message(dialog=dialog, message=user_message(content=tool.prompt, purpose=message_purpose))
         await save_dialog(dialog=dialog, db_name=db_name)
-
-    tool_type = getattr(tools, "tool_types", globals().get("tool_types", {})).get(tool.name, None)
+    tool_type = (
+        getattr(tools, "tool_types", globals().get("tool_types", {})).get(tool.name, None)
+        if not tool_is_dialog
+        else Task
+    )
     all_tools = get_functions_from_module(module=tools)
     if tool.name == "get_selected_tools" and len(all_tools) > 0:
         selected_tool = partial(get_selected_tools, db_name, dialog)
@@ -170,7 +185,11 @@ async def run_tool(
         res = selected_tool(creator_res)  # type: ignore
     logger.success(f"{tool.name} result: {res}")
     if isinstance(res, Dialog):
-        return res
+        if res.name == dialog.name:
+            return res
+        res = get_last_message(messages=res.messages, role="assistant")
+        if res is not None:
+            res = res["content"]
     logger.info(f"adding assistant message: {res}")
     if res is not None:
         dialog = add_message(
@@ -181,7 +200,11 @@ async def run_tool(
 
 
 async def run_selected_tool(
-    db_name: str, dialog: UUID4 | str | Dialog, tool: Tool, creator: Instructor | AsyncInstructor | None = None
+    db_name: str,
+    dialog: UUID4 | str | Dialog,
+    tool: Tool,
+    tool_is_dialog: bool = False,
+    creator: Instructor | AsyncInstructor | None = None,
 ) -> Dialog:
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
     creator = creator or create_creator(model_name=dialog.model_name)
@@ -190,7 +213,9 @@ async def run_selected_tool(
     elif tool.name.lower() == "call_ai":
         dialog = await run_call_ai(creator=creator, dialog=dialog, tool=tool, db_name=db_name)
     else:
-        dialog = await run_tool(db_name=db_name, creator=creator, dialog=dialog, tool=tool)
+        dialog = await run_tool(
+            db_name=db_name, creator=creator, dialog=dialog, tool=tool, tool_is_dialog=tool_is_dialog
+        )
     return dialog
 
 
@@ -199,6 +224,7 @@ async def run_tools(
     dialog: UUID4 | str | Dialog,
     creator: Instructor | AsyncInstructor | None = None,
     available_tools: list[str] | set[str] | None = None,
+    dialogs: list[str] | None = None,
     memory_tagger_dialog: UUID4 | str | Dialog | None = None,
     continue_dialog: bool = CONTINUE_DIALOG,
 ) -> Dialog:
@@ -211,7 +237,13 @@ async def run_tools(
         logger.info(f"next_tool: {next_tool}")
         if next_tool is None:
             break
-        dialog = await run_selected_tool(db_name=db_name, creator=creator, dialog=dialog, tool=next_tool.tool)
+        dialog = await run_selected_tool(
+            db_name=db_name,
+            creator=creator,
+            dialog=dialog,
+            tool=next_tool.tool,
+            tool_is_dialog=next_tool.tool.name in dialogs if dialogs else False,
+        )
         await toggle_dialog_tool_usage(dialog_tool_id=next_tool.id, db_name=db_name)
     used_tools = await get_dialog_tools(dialog=dialog, db_name=db_name, used=True)
     last_used_tool = used_tools[-1].tool if used_tools else DEFAULT_TOOL
@@ -243,8 +275,8 @@ async def run_tools(
             seq += 1
 
     logger.success(f"Messages: {dialog.messages[-2:]}")
-    dialog = name_dialog(dialog=dialog)
-    await save_dialog(dialog=dialog, db_name=db_name)
+    dialog_signature = get_dialog_signature(dialog=dialog)
+    await save_dialog(dialog=dialog, db_name=db_name, dialog_tool_signature=dialog_signature)
     return dialog
 
 
@@ -259,13 +291,18 @@ async def new_task(
 ) -> Dialog:
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
     available_tools = (set(available_tools or []) | set(dialog.available_tools or [])) or []
-    tools_info = "\n\n".join(
-        [
-            f"Tool {i}:\n{get_function_info(func)}"
-            for i, (_, func) in enumerate(get_functions_from_module(module=tools), start=1)
-            if not available_tools or func.__name__ in set(available_tools) | PINNED_TOOLS
-        ]
-    )
+    dialogs = await get_dialogs_with_signatures(db_name=db_name)
+    dialog_names = []
+    dialogs_as_tools = []
+    for d in dialogs:
+        dialog_names.append(d.name)
+        dialogs_as_tools.append(f"Tool:\n{d.dialog_tool_signature}")
+    tools_list = [
+        f"Tool:\n{get_function_info(func)}"
+        for _, func in get_functions_from_module(module=tools)
+        if not available_tools or func.__name__ in set(available_tools) | PINNED_TOOLS
+    ] + dialogs_as_tools
+    tools_info = "\n\n".join(tools_list)
     dialog = add_message(
         dialog=dialog,
         message=user_message(content=f"Available tools for this task:\n{tools_info}", purpose=MessagePurpose.TOOL),
@@ -279,37 +316,7 @@ async def new_task(
         dialog=dialog,
         creator=creator,
         available_tools=available_tools,
+        dialogs=dialog_names,
         memory_tagger_dialog=memory_tagger_dialog,
         continue_dialog=continue_dialog,
     )
-
-
-"""
-So for tool selection, we give the AI a list of function signatures and it gives us a list or strings which are the names of the functions.
-We then get the AI to generate the arguments for the functions. Now, the arguments needed are ifered from the function params. But we can also define some special "tool_type" for that function and trick the AI.
-So for example if a tool has a signature like this:
-def get_weather(day: Literal["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], location: str) -> str:
-    ...
-But IF we have an entry in tool_types like this:
-tool_types = {
-    "get_weather": list[tuple[Literal["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], str]]
-}
-Now, when the AI is generating the arguments, it will see that the tool_type for get_weather is a list of tuples with a string and a Literal type.
-So it will generate a list of tuples with a string and a value from the Literal type, it won't generate just 1 arg for day and 1 for location. So even tho the selection was made based on the function signature, it will still generate a list of tuples because we have tricked it. This can come in handy at times.
-
-Now, suppose I have 2 tools:
-1. lookup_flights(day: str, location: str) -> str
-2. book_flight(flight_number: str) -> str
-3. check_match_score(team1: str, team2: str) -> str
-
-And my task was "book a flight for tomorrow to london".
-I call new_task with this task and it will create a dialog.
-The AI will select tools 1 and 2 to be run in that order.
-Once the task is finished, I name the dialog "lookup_flights_and_book" and save it.
-This dialog has the whole conversation in it. Along with the tool calls and their results, and any hiccups along the way.
-Whenever I get a similar task, I want the AI to send this task to this specific dialog.
-One way to do that is to trick the AI into thinking that "lookup_flights_and_book" is also a tool. So it would just select one tool from the list of tools and call it.
-I want a generic way to do this.
-So, once a dialog is saved, I want it to become available as a tool.
-
-"""
