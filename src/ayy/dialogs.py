@@ -1,4 +1,7 @@
 from ayy.dialog import Dialog, MemoryTag, ModelName, exchange
+from ayy.prompts import NAME_DIALOG
+
+DIALOG_NAMER_DIALOG = Dialog(model_name=ModelName.GEMINI_FLASH, system=NAME_DIALOG, name="dialog_namer_dialog")
 
 MEMORY_TAGGER_DIALOG = Dialog(
     model_name=ModelName.GEMINI_FLASH,

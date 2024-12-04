@@ -238,9 +238,12 @@ class DialogTool(BaseModel):
     used: bool = False
 
 
-def dialog_to_kwargs(dialog: Dialog, trimmed_len: int = TRIMMED_LEN) -> dict:
+def dialog_to_kwargs(dialog: Dialog, messages: Messages | None = None, trimmed_len: int = TRIMMED_LEN) -> dict:
     kwargs = messages_to_kwargs(
-        messages=dialog.messages, system=dialog.system, model_name=dialog.model_name, trimmed_len=trimmed_len
+        messages=messages or dialog.messages,
+        system=dialog.system,
+        model_name=dialog.model_name,
+        trimmed_len=trimmed_len,
     )
     if "gemini" in dialog.model_name.lower():
         kwargs["generation_config"] = dialog.creation_config

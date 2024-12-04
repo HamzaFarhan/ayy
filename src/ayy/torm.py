@@ -47,7 +47,6 @@ async def get_next_dialog_tool(
 ) -> DialogTool | None:
     dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
     dialog_tools = DBDialogTool.filter(dialog_id=dialog_id).using_db(connections.get(db_name))
-    # dialog_tools = DBDialogTool.all(using_db=connections.get(db_name)).filter(dialog_id=dialog_id)
     if position is not None:
         dialog_tools = await dialog_tools.filter(position=position).first()
     else:
@@ -66,11 +65,6 @@ async def get_dialog_tools(
     dialog_tools = await pydantic_queryset_creator(DBDialogTool).from_queryset(
         DBDialogTool.filter(dialog_id=dialog_id, used=used).using_db(connections.get(db_name))
     )
-    # dialog_tools = await pydantic_queryset_creator(DBDialogTool).from_queryset(
-    #     DBDialogTool.all(using_db=connections.get(db_name))
-    #     .filter(dialog_id=dialog_id, used=used)
-    #     .order_by("position")
-    # )
     return [db_dialog_tool_to_dialog_tool(db_dialog_tool=tool) for tool in dialog_tools.model_dump()]
 
 
@@ -80,6 +74,7 @@ async def add_dialog_tools(
     db_name: str = DEFAULT_DB_NAME,
     position: int | None = None,
     used: bool = False,
+    run_next: bool = False,
     replace_all: bool = False,
 ) -> None:
     tools = [tools] if isinstance(tools, Tool) else tools
@@ -88,23 +83,27 @@ async def add_dialog_tools(
     async with in_transaction():
         conn = connections.get(db_name)
         dialog_tools = DBDialogTool.filter(dialog_id=dialog_id).using_db(conn)
-        # dialog_tools = DBDialogTool.all(using_db=conn).filter(dialog_id=dialog_id)
         if replace_all:
             await dialog_tools.delete()
             start_position = 1
         else:
-            query = dialog_tools.order_by("-position")
-            latest_tool = await query.first()
-            if latest_tool is None:
-                latest_position = 0
+            if run_next:
+                first_unused = await dialog_tools.filter(used=False).order_by("position").first()
+                start_position = 1 if first_unused is None else first_unused.position
+                await dialog_tools.filter(position__gte=start_position).update(position=F("position") + len(tools))
             else:
-                latest_position = latest_tool.position
-            logger.info(f"latest_position: {latest_position}")
-            if position is not None:
-                await dialog_tools.filter(position__gte=position).update(position=F("position") + len(tools))
-                start_position = position
-            else:
-                start_position = latest_position + 1
+                query = dialog_tools.order_by("-position")
+                latest_tool = await query.first()
+                if latest_tool is None:
+                    latest_position = 0
+                else:
+                    latest_position = latest_tool.position
+                logger.info(f"latest_position: {latest_position}")
+                if position is not None:
+                    await dialog_tools.filter(position__gte=position).update(position=F("position") + len(tools))
+                    start_position = position
+                else:
+                    start_position = latest_position + 1
         for i, tool in enumerate(tools, start=start_position):
             logger.info(f"tool: {tool}")
             await DBDialogTool.create(
@@ -138,10 +137,8 @@ async def load_dialog(dialog: UUID4 | str | Dialog, db_name: str = DEFAULT_DB_NA
     if isinstance(dialog, Dialog):
         return dialog
     conn = connections.get(db_name)
-    dialog_model = pydantic_model_creator(DBDialog)
     kwargs = {"name": dialog} if isinstance(dialog, str) else {"id": dialog}
-    dialog_obj, created = await DBDialog.get_or_create(defaults=None, using_db=conn, **kwargs)
-    if created:
-        logger.warning(f"Dialog with query params {kwargs} not found, created new one")
+    dialog_obj, _ = await DBDialog.get_or_create(defaults=None, using_db=conn, **kwargs)
+    dialog_model = pydantic_model_creator(DBDialog)
     dialog_model = await dialog_model.from_tortoise_orm(dialog_obj)
     return Dialog(**dialog_model.model_dump())

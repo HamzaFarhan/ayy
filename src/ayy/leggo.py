@@ -1,7 +1,6 @@
 import inspect
 from functools import partial
 from typing import Literal
-from uuid import uuid4
 
 from instructor import AsyncInstructor, Instructor
 from loguru import logger
@@ -19,6 +18,7 @@ from ayy.dialog import (
     dialog_to_kwargs,
     user_message,
 )
+from ayy.dialogs import DIALOG_NAMER_DIALOG
 from ayy.func_utils import function_to_type, get_function_info, get_functions_from_module
 from ayy.torm import (
     add_dialog_tools,
@@ -34,6 +34,23 @@ PINNED_TOOLS = set(["ask_user", "call_ai"])
 CONTINUE_DIALOG = True
 DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
 DEFAULT_TOOL = Tool(reasoning="", name="call_ai", prompt=DEFAULT_PROMPT)
+
+
+class DialogToolSignature(BaseModel):
+    name: str
+    signature: str
+    docstring: str
+
+
+def name_dialog(dialog: Dialog) -> Dialog:
+    namer = create_creator(model_name=DIALOG_NAMER_DIALOG.model_name)
+    namer_res = namer.create(
+        **dialog_to_kwargs(dialog=DIALOG_NAMER_DIALOG, messages=dialog.messages),
+        response_model=DialogToolSignature,
+    )
+    logger.info(f"dialog signature: {namer_res}")
+    dialog.name = namer_res.name  # type: ignore
+    return dialog
 
 
 async def run_ask_user(dialog: Dialog, tool: Tool, db_name: str) -> Dialog:
@@ -81,6 +98,7 @@ async def get_selected_tools(db_name: str, dialog: UUID4 | str | Dialog, selecte
     dialog = add_message(
         dialog=dialog, message=assistant_message(f"<selected_tools>\n{tools_str}\n</selected_tools>")
     )
+    dialog = name_dialog(dialog=dialog)
     await save_dialog(dialog=dialog, db_name=db_name)
     await add_dialog_tools(dialog=dialog, tools=selected_tools, db_name=db_name)
     return dialog
@@ -100,9 +118,10 @@ async def run_tool(
         memory_tagger_dialog = await load_dialog(dialog=memory_tagger_dialog, db_name=db_name)
     is_async = False
     try:
-        tool_attr = getattr(tools, tool.name, globals().get(tool.name, None))
+        tool_map = getattr(tools, "tool_map", globals().get("tool_map", {}))
+        tool_attr = tool_map.get(tool.name, getattr(tools, tool.name, globals().get(tool.name, None)))
         if tool_attr is None:
-            raise ValueError(f"Tool '{tool.name}' not found in tools module")
+            raise ValueError(f"Tool '{tool.name}' not found in tools module or current module")
         if not inspect.isfunction(tool_attr):
             raise ValueError(f"Tool '{tool.name}' is not a function.\nGot {type(tool_attr).__name__} instead")
         selected_tool = tool_attr
@@ -224,6 +243,8 @@ async def run_tools(
             seq += 1
 
     logger.success(f"Messages: {dialog.messages[-2:]}")
+    dialog = name_dialog(dialog=dialog)
+    await save_dialog(dialog=dialog, db_name=db_name)
     return dialog
 
 
@@ -231,16 +252,12 @@ async def new_task(
     db_name: str,
     dialog: UUID4 | str | Dialog,
     task: str,
-    task_name: str = "",
     creator: Instructor | AsyncInstructor | None = None,
     available_tools: list[str] | set[str] | None = None,
     memory_tagger_dialog: UUID4 | str | Dialog | None = None,
     continue_dialog: bool = CONTINUE_DIALOG,
 ) -> Dialog:
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
-    if task_name and dialog.name != task_name:
-        dialog.id = uuid4()
-        dialog.name = task_name
     available_tools = (set(available_tools or []) | set(dialog.available_tools or [])) or []
     tools_info = "\n\n".join(
         [
