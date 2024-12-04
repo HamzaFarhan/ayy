@@ -39,13 +39,26 @@ DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the u
 DEFAULT_TOOL = Tool(reasoning="", name="call_ai", prompt=DEFAULT_PROMPT)
 
 
+async def handle_creator_error(dialog: Dialog, db_name: str, error: Exception, tool_name: str = ""):
+    res = f"Whoops! Something went wrong. Here's the error:\n{error}"
+    if tool_name:
+        res = f"Whoops! Something went wrong in '{tool_name}'. Here's the error:\n{error}"
+    await add_dialog_tools(
+        dialog=dialog, tools=[Tool(reasoning=res, name="ask_user", prompt=res)], db_name=db_name, run_next=True
+    )
+
+
 def get_dialog_signature(dialog: Dialog) -> DialogToolSignature | None:
     namer = create_creator(model_name=DIALOG_NAMER_DIALOG.model_name)
-    namer_res = namer.create(
-        **dialog_to_kwargs(dialog=DIALOG_NAMER_DIALOG, messages=dialog.messages),
-        response_model=DialogToolSignature,
-    )
-    logger.info(f"dialog signature: {namer_res}")
+    try:
+        namer_res = namer.create(
+            **dialog_to_kwargs(dialog=DIALOG_NAMER_DIALOG, messages=dialog.messages),
+            response_model=DialogToolSignature,
+        )
+        logger.info(f"dialog signature: {namer_res}")
+    except Exception:
+        logger.exception("Error getting dialog signature")
+        return None
     if namer_res.name == "":  # type: ignore
         return None
     return namer_res  # type: ignore
@@ -77,15 +90,19 @@ async def run_call_ai(
     logger.info(f"adding user message: {tool.prompt}")
     dialog = add_message(dialog=dialog, message=user_message(content=tool.prompt, purpose=MessagePurpose.TOOL))
     logger.info(f"\n\nCalling AI with messages: {dialog.messages}\n\n")
-    res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
-    logger.success(f"call_ai result: {res}")
-    logger.info(f"adding assistant message: {res}")
-    dialog = add_message(
-        dialog=dialog,
-        message=assistant_message(content=res, purpose=assistant_message_purpose),
-        memory_tagger_dialog=memory_tagger_dialog,
-    )
-    await save_dialog(dialog=dialog, db_name=db_name)
+    try:
+        res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
+        logger.success(f"call_ai result: {res}")
+        logger.info(f"adding assistant message: {res}")
+        dialog = add_message(
+            dialog=dialog,
+            message=assistant_message(content=res, purpose=assistant_message_purpose),
+            memory_tagger_dialog=memory_tagger_dialog,
+        )
+        await save_dialog(dialog=dialog, db_name=db_name)
+    except Exception as e:
+        logger.exception("Error calling AI")
+        await handle_creator_error(dialog=dialog, db_name=db_name, error=e, tool_name=tool.name)
     return dialog
 
 
@@ -169,33 +186,39 @@ async def run_tool(
         )
     # logger.info(f"\n\nCalling {tool.name} with tool_type: {tool_type}\n\n")
     creator = creator or create_creator(model_name=dialog.model_name)
-    creator_res = creator.create(
-        **dialog_to_kwargs(dialog=dialog),
-        response_model=tool_type,  # type: ignore
-    )
-    logger.info(f"{tool.name} creator_res: {creator_res}")
-    if isinstance(creator_res, BaseModel):
-        if is_async:
-            res = await selected_tool(**creator_res.model_dump())
-        else:
-            res = selected_tool(**creator_res.model_dump())
-    elif is_async:
-        res = await selected_tool(creator_res)  # type: ignore
-    else:
-        res = selected_tool(creator_res)  # type: ignore
-    logger.success(f"{tool.name} result: {res}")
-    if isinstance(res, Dialog):
-        if res.name == dialog.name:
-            return res
-        res = get_last_message(messages=res.messages, role="assistant")
-        if res is not None:
-            res = res["content"]
-    logger.info(f"adding assistant message: {res}")
-    if res is not None:
-        dialog = add_message(
-            dialog=dialog, message=assistant_message(content=str(res)), memory_tagger_dialog=memory_tagger_dialog
+    try:
+        creator_res = creator.create(
+            **dialog_to_kwargs(dialog=dialog),
+            response_model=tool_type,  # type: ignore
         )
-    await save_dialog(dialog=dialog, db_name=db_name)
+        logger.info(f"{tool.name} creator_res: {creator_res}")
+        if isinstance(creator_res, BaseModel):
+            if is_async:
+                res = await selected_tool(**creator_res.model_dump())
+            else:
+                res = selected_tool(**creator_res.model_dump())
+        elif is_async:
+            res = await selected_tool(creator_res)  # type: ignore
+        else:
+            res = selected_tool(creator_res)  # type: ignore
+        logger.success(f"{tool.name} result: {res}")
+        if isinstance(res, Dialog):
+            if res.name == dialog.name:
+                return res
+            res = get_last_message(messages=res.messages, role="assistant")
+            if res is not None:
+                res = res["content"]
+        logger.info(f"adding assistant message: {res}")
+        if res is not None:
+            dialog = add_message(
+                dialog=dialog,
+                message=assistant_message(content=str(res)),
+                memory_tagger_dialog=memory_tagger_dialog,
+            )
+        await save_dialog(dialog=dialog, db_name=db_name)
+    except Exception as e:
+        logger.exception(f"Error running tool '{tool.name}'")
+        await handle_creator_error(dialog=dialog, db_name=db_name, error=e, tool_name=tool.name)
     return dialog
 
 
@@ -265,19 +288,22 @@ async def run_tools(
                     db_name=db_name,
                     dialog=dialog,
                     task=user_input,
-                    # available_tools=available_tools,
+                    available_tools=available_tools,
                     continue_dialog=False,
                 )
             else:
                 await add_dialog_tools(dialog=dialog, tools=DEFAULT_TOOL, db_name=db_name, used=True)
-                res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
-                logger.success(f"ai response: {res}")
-                logger.info(f"adding assistant message: {res}")
-                dialog = add_message(
-                    dialog=dialog,
-                    message=assistant_message(content=res),
-                    memory_tagger_dialog=memory_tagger_dialog,
-                )
+                try:
+                    res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
+                    logger.success(f"ai response: {res}")
+                    res_message = assistant_message(content=res)
+                except Exception as e:
+                    logger.exception("Error calling AI after continuing dialog")
+                    res_message = assistant_message(
+                        content=f"Whoops! Something went wrong. Here's the error:\n{e}"
+                    )
+                logger.info(f"adding message: {res_message['content']}")
+                dialog = add_message(dialog=dialog, message=res_message, memory_tagger_dialog=memory_tagger_dialog)
                 await save_dialog(dialog=dialog, db_name=db_name)
             seq += 1
 

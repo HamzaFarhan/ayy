@@ -250,8 +250,9 @@ class DialogTool(BaseModel):
 
 
 def dialog_to_kwargs(dialog: Dialog, messages: Messages | None = None, trimmed_len: int = TRIMMED_LEN) -> dict:
+    messages = messages or []
     kwargs = messages_to_kwargs(
-        messages=messages or dialog.messages,
+        messages=dialog.messages + [message for message in messages if message["role"] != "system"],
         system=dialog.system,
         model_name=dialog.model_name,
         trimmed_len=trimmed_len,

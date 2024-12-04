@@ -45,14 +45,20 @@ async def init_db(db_names: list[str] | str = DEFAULT_DB_NAME, app_names: list[s
 
 
 async def get_next_dialog_tool(
-    dialog: UUID4 | Dialog, db_name: str = DEFAULT_DB_NAME, position: int | None = None
+    dialog: UUID4 | Dialog,
+    db_name: str = DEFAULT_DB_NAME,
+    used: bool = False,
+    reverse: bool = False,
+    position: int | None = None,
 ) -> DialogTool | None:
     dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
     dialog_tools = DBDialogTool.filter(dialog_id=dialog_id).using_db(connections.get(db_name))
     if position is not None:
         dialog_tools = await dialog_tools.filter(position=position).first()
     else:
-        dialog_tools = await dialog_tools.filter(used=False).order_by("position").first()
+        dialog_tools = (
+            await dialog_tools.filter(used=used).order_by("position" if not reverse else "-position").first()
+        )
     if dialog_tools is None:
         return None
     tool_model = pydantic_model_creator(DBDialogTool)
@@ -62,7 +68,7 @@ async def get_next_dialog_tool(
 
 async def get_dialogs_with_signatures(db_name: str = DEFAULT_DB_NAME) -> list[Dialog]:
     dialogs = await pydantic_queryset_creator(DBDialog).from_queryset(
-        DBDialog.filter(dialog_tool_signature__not={}).using_db(connections.get(db_name))
+        DBDialog.filter(dialog_tool_signature__not={}).order_by("position").using_db(connections.get(db_name))
     )
     return [Dialog(**dialog) for dialog in dialogs.model_dump()]
 
@@ -72,7 +78,7 @@ async def get_dialog_tools(
 ) -> list[DialogTool]:
     dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
     dialog_tools = await pydantic_queryset_creator(DBDialogTool).from_queryset(
-        DBDialogTool.filter(dialog_id=dialog_id, used=used).using_db(connections.get(db_name))
+        DBDialogTool.filter(dialog_id=dialog_id, used=used).order_by("position").using_db(connections.get(db_name))
     )
     return [db_dialog_tool_to_dialog_tool(db_dialog_tool=tool) for tool in dialog_tools.model_dump()]
 
