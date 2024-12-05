@@ -48,7 +48,6 @@ if __name__ == "__main__":
             # task="list the grounds in london",
             task="list the grounds in manchester and the weather there on tue",
             memory_tagger_dialog=MEMORY_TAGGER_DIALOG,
-            available_tools=["list_available_grounds_and_format_response_and_get_weather_and_format_response"],
         )
     )
     logger.success("Task done")

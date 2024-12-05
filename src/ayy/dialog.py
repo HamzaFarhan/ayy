@@ -5,7 +5,7 @@ from functools import partial
 from itertools import groupby
 from operator import itemgetter
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 from uuid import uuid4
 
 import instructor
@@ -14,7 +14,7 @@ from google.generativeai import GenerativeModel
 from instructor import AsyncInstructor, Instructor
 from loguru import logger
 from openai import AsyncOpenAI, OpenAI
-from pydantic import UUID4, AfterValidator, BaseModel, Field, field_validator
+from pydantic import UUID4, AfterValidator, BaseModel, Field, field_validator, model_validator
 
 from ayy.prompts import TOOL_SELECTION_SYSTEM
 
@@ -221,6 +221,7 @@ class DialogToolSignature(BaseModel):
     name: str = ""
     signature: str = ""
     docstring: str = ""
+    system: str = ""
 
 
 class Dialog(BaseModel):
@@ -233,12 +234,15 @@ class Dialog(BaseModel):
     dialog_tool_signature: dict = Field(default_factory=dict)
     available_tools: list[str] = Field(default_factory=list)
 
-    @field_validator("system")
-    @classmethod
-    def validate_system(cls, v: Content) -> Content:
-        return (
-            v.strip() + f"\n\n<tool_selection_guidelines>\n{TOOL_SELECTION_SYSTEM}\n</tool_selection_guidelines>"
+    @model_validator(mode="after")
+    def validate_system_and_signature(self) -> Self:
+        self.system = (
+            self.dialog_tool_signature.get("system", self.system).strip()
+            + f"\n\n<tool_selection_guidelines>\n{TOOL_SELECTION_SYSTEM}\n</tool_selection_guidelines>"
         )
+        if "system" in self.dialog_tool_signature:
+            del self.dialog_tool_signature["system"]
+        return self
 
 
 class DialogTool(BaseModel):

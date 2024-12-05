@@ -68,7 +68,7 @@ async def get_next_dialog_tool(
 
 async def get_dialogs_with_signatures(db_name: str = DEFAULT_DB_NAME) -> list[Dialog]:
     dialogs = await pydantic_queryset_creator(DBDialog).from_queryset(
-        DBDialog.filter(dialog_tool_signature__not={}).order_by("position").using_db(connections.get(db_name))
+        DBDialog.filter(dialog_tool_signature__not={}).using_db(connections.get(db_name))
     )
     return [Dialog(**dialog) for dialog in dialogs.model_dump()]
 
@@ -147,6 +147,7 @@ async def save_dialog(
     if dialog_tool_signature is not None and dialog_tool_signature.name not in [
         f[0] for f in get_functions_from_module(tools_module)
     ]:
+        dialog_dict["system"] = dialog_tool_signature.system
         dialog_dict["name"] = dialog_tool_signature.name
         dialog_dict["dialog_tool_signature"] = dialog_tool_signature.model_dump()
     existing_dialog = await DBDialog.filter(name=dialog.name).using_db(conn).first()
