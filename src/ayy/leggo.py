@@ -1,4 +1,5 @@
 import inspect
+import json
 from functools import partial
 from typing import Literal
 
@@ -59,9 +60,7 @@ def get_dialog_signature(dialog: Dialog) -> DialogToolSignature | None:
     except Exception:
         logger.exception("Error getting dialog signature")
         return None
-    if namer_res.name == "":  # type: ignore
-        return None
-    return namer_res  # type: ignore
+    return None if namer_res.name == "" else namer_res  # type: ignore
 
 
 async def run_ask_user(dialog: Dialog, tool: Tool, db_name: str) -> Dialog:
@@ -319,6 +318,7 @@ async def new_task(
     task: str,
     creator: Instructor | AsyncInstructor | None = None,
     available_tools: list[str] | set[str] | None = None,
+    recommended_tools: dict[int, str] | None = None,
     memory_tagger_dialog: UUID4 | str | Dialog | None = None,
     continue_dialog: bool = CONTINUE_DIALOG,
 ) -> Dialog:
@@ -342,6 +342,17 @@ async def new_task(
         dialog=dialog,
         message=user_message(content=f"Available tools for this task:\n{tools_info}", purpose=MessagePurpose.TOOL),
     )
+    if recommended_tools is None:
+        used_tools = await get_dialog_tools(dialog=dialog, db_name=db_name, used=True)
+        recommended_tools = {tool.position: tool.tool.name for tool in used_tools}
+    if recommended_tools:
+        dialog = add_message(
+            dialog=dialog,
+            message=user_message(
+                content=f"Recommended tools for this task (in order):\n{json.dumps(recommended_tools, indent=2)}",
+                purpose=MessagePurpose.TOOL,
+            ),
+        )
     await save_dialog(dialog=dialog, db_name=db_name)
     await add_dialog_tools(
         dialog=dialog, tools=[Tool(reasoning="", name="get_selected_tools", prompt=task)], db_name=db_name
