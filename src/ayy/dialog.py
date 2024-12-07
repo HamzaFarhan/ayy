@@ -253,6 +253,21 @@ class DialogTool(BaseModel):
     used: bool = False
 
 
+class Task(BaseModel):
+    id: UUID4 = Field(default_factory=lambda: uuid4())
+    name: str = ""
+    dialog_id: UUID4
+    messages: Messages = Field(default_factory=list)
+
+
+class TaskTool(BaseModel):
+    id: int
+    position: int
+    task_id: UUID4
+    tool: Tool
+    used: bool = False
+
+
 def dialog_to_kwargs(dialog: Dialog, messages: Messages | None = None, trimmed_len: int = TRIMMED_LEN) -> dict:
     messages = messages or []
     kwargs = messages_to_kwargs(
@@ -302,7 +317,7 @@ class MemoryTags(BaseModel):
 
 
 def add_message(
-    dialog: Dialog,
+    task_or_dialog: Task | Dialog,
     role: str = "user",
     content: Content = "",
     template: Content = "",
@@ -310,13 +325,13 @@ def add_message(
     message: MessageType | None = None,
     memory_tagger_dialog: Dialog | None = None,
     tagger_trimmed_len: int = TRIMMED_LEN,
-) -> Dialog:
+) -> Task | Dialog:
     if content is None:
-        return dialog
+        return task_or_dialog
     message = message or chat_message(role=role, content=content, template=template, purpose=purpose)
     if memory_tagger_dialog is not None:
         try:
-            memory_tagger_dialog.messages += dialog.messages + [message]
+            memory_tagger_dialog.messages += task_or_dialog.messages + [message]
             creator = create_creator(model_name=memory_tagger_dialog.model_name)
             memory_tags: MemoryTags = creator.create(
                 **dialog_to_kwargs(dialog=memory_tagger_dialog, trimmed_len=tagger_trimmed_len),
@@ -328,5 +343,5 @@ def add_message(
             )
             memory_tags = MemoryTags(reasoning="", memory_tags=[DEFAULT_TAG])
         message["memory_tags"] = memory_tags.memory_tags
-    dialog.messages.append(message)
-    return dialog
+    task_or_dialog.messages.append(message)
+    return task_or_dialog
