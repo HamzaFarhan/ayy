@@ -5,7 +5,7 @@ from functools import partial
 from itertools import groupby
 from operator import itemgetter
 from pathlib import Path
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal, Self, cast
 from uuid import uuid4
 
 import instructor
@@ -76,6 +76,7 @@ MessageType = dict[str, Content]
 class MessagePurpose(StrEnum):
     CONVO = "convo"
     TOOL = "tool"
+    ERROR = "error"
 
 
 DEFAULT_MESSAGE_PURPOSE = MessagePurpose.CONVO
@@ -345,3 +346,44 @@ def add_message(
         message["memory_tags"] = memory_tags.memory_tags
     task_or_dialog.messages.append(message)
     return task_or_dialog
+
+
+def add_dialog_message(
+    dialog: Dialog,
+    role: str = "user",
+    content: Content = "",
+    template: Content = "",
+    purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE,
+    message: MessageType | None = None,
+    memory_tagger_dialog: Dialog | None = None,
+    tagger_trimmed_len: int = TRIMMED_LEN,
+) -> Dialog:
+    return cast(
+        Dialog,
+        add_message(
+            task_or_dialog=dialog,
+            role=role,
+            content=content,
+            template=template,
+            purpose=purpose,
+            message=message,
+            memory_tagger_dialog=memory_tagger_dialog,
+            tagger_trimmed_len=tagger_trimmed_len,
+        ),
+    )
+
+
+def add_task_message(
+    task: Task,
+    role: str = "user",
+    content: Content = "",
+    template: Content = "",
+    purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE,
+    message: MessageType | None = None,
+) -> Task:
+    return cast(
+        Task,
+        add_message(
+            task_or_dialog=task, role=role, content=content, template=template, purpose=purpose, message=message
+        ),
+    )

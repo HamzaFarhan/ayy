@@ -1,5 +1,4 @@
 from loguru import logger
-from pydantic import UUID4
 from tortoise import run_async
 
 from ayy.dialog import Dialog, ModelName
@@ -12,21 +11,6 @@ MODEL_NAME = ModelName.GEMINI_FLASH
 
 DB_NAME = "tasks_db"
 APP_NAME = "tasks"
-
-
-async def _new_task(
-    dialog: UUID4 | str | Dialog,
-    task: str,
-    memory_tagger_dialog: UUID4 | str | Dialog | None = None,
-    available_tools: list[str] | set[str] | None = None,
-) -> Dialog:
-    return await new_task(
-        db_name=DB_NAME,
-        dialog=dialog,
-        task=task,
-        memory_tagger_dialog=memory_tagger_dialog,
-        available_tools=available_tools,
-    )
 
 
 async def setup():
@@ -43,10 +27,12 @@ if __name__ == "__main__":
     logger.success("Setup done")
     logger.info("Running task")
     run_async(
-        _new_task(
+        new_task(
+            db_name=DB_NAME,
             dialog="list_grounds",
-            # task="list the grounds in london",
-            task="list the grounds in manchester and the weather there on tue",
+            # task_query="list the grounds in london",
+            # task_query="list the grounds in manchester and the weather there on tue",
+            task_query="weather on tuesday?",
             memory_tagger_dialog=MEMORY_TAGGER_DIALOG,
         )
     )
