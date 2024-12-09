@@ -7,11 +7,11 @@ DEFAULT_APP_NAME = "tasks"
 
 class Dialog(models.Model):
     id = fields.UUIDField(pk=True)
+    name = fields.CharField(max_length=255, default="")
     system = fields.TextField(default="")
     messages = fields.JSONField(default=list)
     model_name = fields.CharField(max_length=255, default=MODEL_NAME.value)
     creation_config = fields.JSONField(default=dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS))
-    name = fields.CharField(max_length=255, default="")
     dialog_tool_signature = fields.JSONField(default=dict)
     available_tools = fields.JSONField(default=list)
 

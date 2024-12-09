@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal, Self, cast
 from uuid import uuid4
 
 import instructor
+import numpy as np
 from anthropic import Anthropic, AsyncAnthropic
 from google.generativeai import GenerativeModel
 from instructor import AsyncInstructor, Instructor
@@ -16,13 +17,25 @@ from loguru import logger
 from openai import AsyncOpenAI, OpenAI
 from pydantic import UUID4, AfterValidator, BaseModel, Field, field_validator, model_validator
 
-from ayy.prompts import TOOL_SELECTION_SYSTEM
+from ayy.prompts import SELECT_TOOLS
+from ayy.utils import flatten_list
 
-TRIMMED_LEN = 40
+MAX_MESSAGE_TOKENS = 100_000
 MERGE_JOINER = "\n\n--- Next Message ---\n\n"
 TEMPERATURE = 0.1
 MAX_TOKENS = 3000
 DEFAULT_TAG = "RECALL"
+
+
+class ModelName(StrEnum):
+    GPT = "gpt-4o-2024-11-20"
+    GPT_MINI = "gpt-4o-mini"
+    HAIKU = "claude-3-haiku-latest"
+    SONNET = "claude-3-5-sonnet-latest"
+    OPUS = "claude-3-opus-latest"
+    GEMINI_PRO = "gemini-1.5-pro-001"
+    GEMINI_FLASH = "gemini-1.5-flash-002"
+    GEMINI_FLASH_EXP = "gemini-1.5-flash-exp-0827"
 
 
 class Tool(BaseModel):
@@ -45,15 +58,24 @@ class Tool(BaseModel):
         return f"Reasoning: {self.reasoning}\nName: {self.name}\nPrompt: {self.prompt}"
 
 
-class ModelName(StrEnum):
-    GPT = "gpt-4o-2024-11-20"
-    GPT_MINI = "gpt-4o-mini"
-    HAIKU = "claude-3-haiku-latest"
-    SONNET = "claude-3-5-sonnet-latest"
-    OPUS = "claude-3-opus-latest"
-    GEMINI_PRO = "gemini-1.5-pro-001"
-    GEMINI_FLASH = "gemini-1.5-flash-002"
-    GEMINI_FLASH_EXP = "gemini-1.5-flash-exp-0827"
+class Information(BaseModel):
+    name: str
+    content: str
+    temporary: bool = False
+
+
+class Summary(BaseModel):
+    bullet_points: list[str]
+    core_information: list[Information] = Field(default_factory=list)
+    temporary_information: list[Information] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_information(self) -> Self:
+        for i in range(len(self.core_information)):
+            self.core_information[i].temporary = False
+        for i in range(len(self.temporary_information)):
+            self.temporary_information[i].temporary = True
+        return self
 
 
 def load_content(content: Any, echo: bool = True) -> Any:
@@ -74,6 +96,7 @@ MessageType = dict[str, Content]
 
 
 class MessagePurpose(StrEnum):
+    SUMMARY = "summary"
     CONVO = "convo"
     TOOL = "tool"
     ERROR = "error"
@@ -183,16 +206,32 @@ def merge_same_role_messages(messages: Messages, joiner: Content = MERGE_JOINER)
     )
 
 
-def trim_messages(messages: Messages, trimmed_len: int = TRIMMED_LEN) -> list[MessageType]:
-    if len(messages) <= trimmed_len:
+def trim_messages(messages: Messages, max_message_tokens: int | None = MAX_MESSAGE_TOKENS) -> list[MessageType]:
+    if not messages or max_message_tokens is None:
         return messages
-    for start_idx in range(len(messages) - trimmed_len, -1, -1):
-        trimmed_messages = messages[start_idx:]
-        if trimmed_messages[0]["role"] == "user":
-            if messages[0]["role"] == "system":
-                trimmed_messages.insert(0, messages[0])
-            return trimmed_messages
-    return messages
+
+    system_msg = messages[0] if messages and messages[0]["role"] == "system" else None
+    working_messages = messages[1:] if system_msg else messages[:]
+    if working_messages and working_messages[0]["role"] == "assistant":
+        working_messages[0] = {
+            **working_messages[0],
+            "role": "user",
+            "content": f"<previous_assistant_message>\n{working_messages[0]['content']}\n</previous_assistant_message>",
+        }
+    total_tokens = 0
+    for i in range(len(working_messages) - 1, -1, -1):
+        msg_tokens = count_tokens([working_messages[i]])
+        if total_tokens + msg_tokens > max_message_tokens:
+            if system_msg:
+                return [system_msg] + working_messages[i + 1 :]
+            return working_messages[i + 1 :]
+        total_tokens += msg_tokens
+
+    return messages if not system_msg else [system_msg] + working_messages
+
+
+def count_tokens(messages: Messages) -> int:
+    return int(np.ceil(len(flatten_list([message["content"].split() for message in messages])) * 0.75))
 
 
 def messages_to_kwargs(
@@ -200,10 +239,10 @@ def messages_to_kwargs(
     system: str = "",
     model_name: str = MODEL_NAME,
     joiner: Content = MERGE_JOINER,
-    trimmed_len: int = TRIMMED_LEN,
+    max_message_tokens: int = MAX_MESSAGE_TOKENS,
 ) -> dict:
     messages = deepcopy(messages)
-    messages = trim_messages(messages=messages, trimmed_len=trimmed_len)
+    messages = trim_messages(messages=messages, max_message_tokens=max_message_tokens)
     kwargs = {"messages": [chat_message(role=message["role"], content=message["content"]) for message in messages]}
     first_message = messages[0]
     if first_message["role"] == "system":
@@ -227,11 +266,12 @@ class DialogToolSignature(BaseModel):
 
 class Dialog(BaseModel):
     id: UUID4 = Field(default_factory=lambda: uuid4())
+    name: str = ""
     system: Content = ""
     messages: Messages = Field(default_factory=list)
     model_name: ModelName = MODEL_NAME
     creation_config: dict = dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
-    name: str = ""
+    max_message_tokens: int = MAX_MESSAGE_TOKENS
     dialog_tool_signature: dict = Field(default_factory=dict)
     available_tools: list[str] = Field(default_factory=list)
 
@@ -239,19 +279,22 @@ class Dialog(BaseModel):
     def validate_system_and_signature(self) -> Self:
         self.system = (
             self.dialog_tool_signature.get("system", self.system).strip()
-            + f"\n\n<tool_selection_guidelines>\n{TOOL_SELECTION_SYSTEM}\n</tool_selection_guidelines>"
-        )
+            + f"\n\n<tool_selection_guidelines>\n{SELECT_TOOLS}\n</tool_selection_guidelines>"
+        ).strip()
         if "system" in self.dialog_tool_signature:
             del self.dialog_tool_signature["system"]
         return self
 
-
-class DialogTool(BaseModel):
-    id: int
-    position: int
-    dialog_id: UUID4
-    tool: Tool
-    used: bool = False
+    @field_validator("max_message_tokens")
+    @classmethod
+    def validate_max_message_tokens(cls, v: int) -> int:
+        if "gpt" in cls.model_name.lower():
+            return 100_000
+        elif "claude" in cls.model_name.lower():
+            return 175_000
+        elif "gemini" in cls.model_name.lower():
+            return 800_000
+        return v
 
 
 class Task(BaseModel):
@@ -269,13 +312,13 @@ class TaskTool(BaseModel):
     used: bool = False
 
 
-def dialog_to_kwargs(dialog: Dialog, messages: Messages | None = None, trimmed_len: int = TRIMMED_LEN) -> dict:
+def dialog_to_kwargs(dialog: Dialog, messages: Messages | None = None) -> dict:
     messages = messages or []
     kwargs = messages_to_kwargs(
         messages=dialog.messages + [message for message in messages if message["role"] != "system"],
         system=dialog.system,
         model_name=dialog.model_name,
-        trimmed_len=trimmed_len,
+        max_message_tokens=dialog.max_message_tokens,
     )
     if "gemini" in dialog.model_name.lower():
         kwargs["generation_config"] = dialog.creation_config
@@ -325,7 +368,6 @@ def add_message(
     purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE,
     message: MessageType | None = None,
     memory_tagger_dialog: Dialog | None = None,
-    tagger_trimmed_len: int = TRIMMED_LEN,
 ) -> Task | Dialog:
     if content is None:
         return task_or_dialog
@@ -335,7 +377,7 @@ def add_message(
             memory_tagger_dialog.messages += task_or_dialog.messages + [message]
             creator = create_creator(model_name=memory_tagger_dialog.model_name)
             memory_tags: MemoryTags = creator.create(
-                **dialog_to_kwargs(dialog=memory_tagger_dialog, trimmed_len=tagger_trimmed_len),
+                **dialog_to_kwargs(dialog=memory_tagger_dialog),
                 response_model=MemoryTags,  # type: ignore
             )
         except Exception:
@@ -356,7 +398,6 @@ def add_dialog_message(
     purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE,
     message: MessageType | None = None,
     memory_tagger_dialog: Dialog | None = None,
-    tagger_trimmed_len: int = TRIMMED_LEN,
 ) -> Dialog:
     return cast(
         Dialog,
@@ -368,7 +409,6 @@ def add_dialog_message(
             purpose=purpose,
             message=message,
             memory_tagger_dialog=memory_tagger_dialog,
-            tagger_trimmed_len=tagger_trimmed_len,
         ),
     )
 
