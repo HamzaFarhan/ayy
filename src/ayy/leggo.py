@@ -92,12 +92,9 @@ async def run_call_ai(
     dialog: UUID4 | str | Dialog,
     tool: Tool,
     creator: Instructor | AsyncInstructor | None = None,
-    memory_tagger_dialog: UUID4 | str | Dialog | None = None,
 ) -> Task:
     task = await load_task(task=task, db_name=db_name)
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
-    if memory_tagger_dialog is not None:
-        memory_tagger_dialog = await load_dialog(dialog=memory_tagger_dialog, db_name=db_name)
     creator = creator or create_creator(model_name=dialog.model_name)
     assistant_message_purpose = (
         MessagePurpose.CONVO if tool.name in PINNED_TOOLS | {"get_selected_tools"} else MessagePurpose.TOOL
@@ -114,7 +111,7 @@ async def run_call_ai(
     res_message = assistant_message(content=res, purpose=assistant_message_purpose)
     if assistant_message_purpose != MessagePurpose.TOOL:
         task = add_task_message(task=task, message=res_message)
-    dialog = add_dialog_message(dialog=dialog, message=res_message, memory_tagger_dialog=memory_tagger_dialog)
+    dialog = add_dialog_message(dialog=dialog, message=res_message)
     await save_dialog(dialog=dialog, db_name=db_name)
     await save_task(task=task, db_name=db_name)
     return task
@@ -153,12 +150,9 @@ async def run_tool(
     creator: Instructor | AsyncInstructor | None = None,
     ignore_default_values: bool = False,
     skip_default_params: bool = False,
-    memory_tagger_dialog: UUID4 | str | Dialog | None = None,
 ) -> Task:
     task = await load_task(task=task, db_name=db_name)
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
-    if memory_tagger_dialog is not None:
-        memory_tagger_dialog = await load_dialog(dialog=memory_tagger_dialog, db_name=db_name)
     is_async = False
     if tool_is_dialog:
         selected_tool = partial(run_dialog_as_tool, db_name, await load_dialog(dialog=tool.name, db_name=db_name))
@@ -233,7 +227,7 @@ async def run_tool(
         logger.info(f"adding assistant message: {res}")
         res_message = assistant_message(content=str(res), purpose=MessagePurpose.TOOL)
         # task = add_task_message(task=task, message=res_message)
-        dialog = add_dialog_message(dialog=dialog, message=res_message, memory_tagger_dialog=memory_tagger_dialog)
+        dialog = add_dialog_message(dialog=dialog, message=res_message)
     await save_dialog(dialog=dialog, db_name=db_name)
     await save_task(task=task, db_name=db_name)
     return task
@@ -275,14 +269,11 @@ async def run_tools(
     creator: Instructor | AsyncInstructor | None = None,
     available_tools: list[str] | set[str] | None = None,
     dialogs: list[str] | set[str] | None = None,
-    memory_tagger_dialog: UUID4 | str | Dialog | None = None,
     continue_dialog: bool = CONTINUE_DIALOG,
 ) -> Task:
     task = await load_task(task=task, db_name=db_name)
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
     creator = creator or create_creator(model_name=dialog.model_name)
-    if memory_tagger_dialog is not None:
-        memory_tagger_dialog = await load_dialog(dialog=memory_tagger_dialog, db_name=db_name)
     while True:
         next_tool = await get_next_task_tool(task=task, db_name=db_name)
         logger.info(f"next_tool: {next_tool}")
@@ -336,9 +327,7 @@ async def run_tools(
                     )
                 logger.info(f"adding message: {res_message['content']}")
                 task = add_task_message(task=task, message=res_message)
-                dialog = add_dialog_message(
-                    dialog=dialog, message=res_message, memory_tagger_dialog=memory_tagger_dialog
-                )
+                dialog = add_dialog_message(dialog=dialog, message=res_message)
                 await save_dialog(dialog=dialog, db_name=db_name)
                 await save_task(task=task, db_name=db_name)
             seq += 1
@@ -358,7 +347,6 @@ async def new_task(
     creator: Instructor | AsyncInstructor | None = None,
     available_tools: list[str] | set[str] | None = None,
     recommended_tools: dict[int, str] | None = None,
-    memory_tagger_dialog: UUID4 | str | Dialog | None = None,
     continue_dialog: bool = CONTINUE_DIALOG,
 ) -> Task:
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
@@ -403,6 +391,5 @@ async def new_task(
         creator=creator,
         available_tools=set(tool_names) | set(dialog_names) | PINNED_TOOLS,
         dialogs=set(dialog_names),
-        memory_tagger_dialog=memory_tagger_dialog,
         continue_dialog=continue_dialog,
     )

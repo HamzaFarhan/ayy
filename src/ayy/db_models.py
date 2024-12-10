@@ -1,6 +1,6 @@
 from tortoise import fields, models
 
-from ayy.dialog import MAX_TOKENS, MODEL_NAME, TEMPERATURE
+from ayy.dialog import MAX_MESSAGE_TOKENS, MAX_TOKENS, MODEL_NAME, TEMPERATURE
 
 DEFAULT_APP_NAME = "tasks"
 
@@ -11,9 +11,11 @@ class Dialog(models.Model):
     system = fields.TextField(default="")
     messages = fields.JSONField(default=list)
     model_name = fields.CharField(max_length=255, default=MODEL_NAME.value)
+    max_message_tokens = fields.IntField(default=MAX_MESSAGE_TOKENS)
     creation_config = fields.JSONField(default=dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS))
     dialog_tool_signature = fields.JSONField(default=dict)
     available_tools = fields.JSONField(default=list)
+    include_tool_guidelines = fields.BooleanField(default=True)
 
     class Meta:  # type: ignore
         app = DEFAULT_APP_NAME

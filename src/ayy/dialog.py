@@ -1,11 +1,11 @@
 import json
 from copy import deepcopy
-from enum import Enum, StrEnum
+from enum import StrEnum
 from functools import partial
 from itertools import groupby
 from operator import itemgetter
 from pathlib import Path
-from typing import Annotated, Any, Literal, Self, cast
+from typing import Annotated, Any, Self, cast
 from uuid import uuid4
 
 import instructor
@@ -17,6 +17,7 @@ from loguru import logger
 from openai import AsyncOpenAI, OpenAI
 from pydantic import UUID4, AfterValidator, BaseModel, Field, field_validator, model_validator
 
+from ayy.memory import Summary
 from ayy.prompts import SELECT_TOOLS
 from ayy.utils import flatten_list
 
@@ -56,26 +57,6 @@ class Tool(BaseModel):
 
     def __str__(self) -> str:
         return f"Reasoning: {self.reasoning}\nName: {self.name}\nPrompt: {self.prompt}"
-
-
-class Information(BaseModel):
-    name: str
-    content: str
-    temporary: bool = False
-
-
-class Summary(BaseModel):
-    bullet_points: list[str]
-    core_information: list[Information] = Field(default_factory=list)
-    temporary_information: list[Information] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_information(self) -> Self:
-        for i in range(len(self.core_information)):
-            self.core_information[i].temporary = False
-        for i in range(len(self.temporary_information)):
-            self.temporary_information[i].temporary = True
-        return self
 
 
 def load_content(content: Any, echo: bool = True) -> Any:
@@ -174,6 +155,62 @@ def load_messages(messages: list[MessageType] | str | Path) -> list[MessageType]
 Messages = Annotated[list[MessageType], AfterValidator(load_messages)]
 
 
+class DialogToolSignature(BaseModel):
+    name: str = ""
+    signature: str = ""
+    docstring: str = ""
+    system: str = ""
+
+
+class Dialog(BaseModel):
+    id: UUID4 = Field(default_factory=lambda: uuid4())
+    name: str = ""
+    system: Content = ""
+    messages: Messages = Field(default_factory=list)
+    model_name: ModelName = MODEL_NAME
+    creation_config: dict = dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
+    max_message_tokens: int = MAX_MESSAGE_TOKENS
+    dialog_tool_signature: dict = Field(default_factory=dict)
+    available_tools: list[str] = Field(default_factory=list)
+    include_tool_guidelines: bool = True
+
+    @model_validator(mode="after")
+    def validate_system_and_signature(self) -> Self:
+        self.system = self.dialog_tool_signature.get("system", self.system).strip()
+        if self.include_tool_guidelines:
+            self.system += f"\n\n<tool_selection_guidelines>\n{SELECT_TOOLS}\n</tool_selection_guidelines>"
+        self.system = self.system.strip()
+        if "system" in self.dialog_tool_signature:
+            del self.dialog_tool_signature["system"]
+        return self
+
+    @field_validator("max_message_tokens")
+    @classmethod
+    def validate_max_message_tokens(cls, v: int) -> int:
+        if "gpt" in cls.model_name.lower():
+            return 100_000
+        elif "claude" in cls.model_name.lower():
+            return 175_000
+        elif "gemini" in cls.model_name.lower():
+            return 800_000
+        return v
+
+
+class Task(BaseModel):
+    id: UUID4 = Field(default_factory=lambda: uuid4())
+    name: str = ""
+    dialog_id: UUID4
+    messages: Messages = Field(default_factory=list)
+
+
+class TaskTool(BaseModel):
+    id: int
+    position: int
+    task_id: UUID4
+    tool: Tool
+    used: bool = False
+
+
 def get_last_message(messages: Messages, role: str = "assistant") -> MessageType | None:
     return next((msg for msg in reversed(messages) if msg["role"] == role), None)
 
@@ -206,11 +243,16 @@ def merge_same_role_messages(messages: Messages, joiner: Content = MERGE_JOINER)
     )
 
 
-def trim_messages(messages: Messages, max_message_tokens: int | None = MAX_MESSAGE_TOKENS) -> list[MessageType]:
-    if not messages or max_message_tokens is None:
-        return messages
+def count_tokens(messages: Messages) -> int:
+    return int(np.ceil(len(flatten_list([message["content"].split() for message in messages])) * 0.75))
 
-    system_msg = messages[0] if messages and messages[0]["role"] == "system" else None
+
+def trim_messages(
+    messages: Messages, max_message_tokens: int | None = MAX_MESSAGE_TOKENS
+) -> tuple[list[MessageType], list[MessageType]]:
+    if not messages or max_message_tokens is None:
+        return messages, []
+    system_msg = [messages[0]] if messages and messages[0]["role"] == "system" else []
     working_messages = messages[1:] if system_msg else messages[:]
     if working_messages and working_messages[0]["role"] == "assistant":
         working_messages[0] = {
@@ -219,19 +261,14 @@ def trim_messages(messages: Messages, max_message_tokens: int | None = MAX_MESSA
             "content": f"<previous_assistant_message>\n{working_messages[0]['content']}\n</previous_assistant_message>",
         }
     total_tokens = 0
-    for i in range(len(working_messages) - 1, -1, -1):
-        msg_tokens = count_tokens([working_messages[i]])
+    trim_idx = len(working_messages) - 1
+    while trim_idx >= 0:
+        msg_tokens = count_tokens([working_messages[trim_idx]])
         if total_tokens + msg_tokens > max_message_tokens:
-            if system_msg:
-                return [system_msg] + working_messages[i + 1 :]
-            return working_messages[i + 1 :]
+            break
         total_tokens += msg_tokens
-
-    return messages if not system_msg else [system_msg] + working_messages
-
-
-def count_tokens(messages: Messages) -> int:
-    return int(np.ceil(len(flatten_list([message["content"].split() for message in messages])) * 0.75))
+        trim_idx -= 1
+    return system_msg + working_messages[trim_idx + 1 :], working_messages[: trim_idx + 1]
 
 
 def messages_to_kwargs(
@@ -242,7 +279,7 @@ def messages_to_kwargs(
     max_message_tokens: int = MAX_MESSAGE_TOKENS,
 ) -> dict:
     messages = deepcopy(messages)
-    messages = trim_messages(messages=messages, max_message_tokens=max_message_tokens)
+    messages, _ = trim_messages(messages=messages, max_message_tokens=max_message_tokens)
     kwargs = {"messages": [chat_message(role=message["role"], content=message["content"]) for message in messages]}
     first_message = messages[0]
     if first_message["role"] == "system":
@@ -257,61 +294,6 @@ def messages_to_kwargs(
     return kwargs
 
 
-class DialogToolSignature(BaseModel):
-    name: str = ""
-    signature: str = ""
-    docstring: str = ""
-    system: str = ""
-
-
-class Dialog(BaseModel):
-    id: UUID4 = Field(default_factory=lambda: uuid4())
-    name: str = ""
-    system: Content = ""
-    messages: Messages = Field(default_factory=list)
-    model_name: ModelName = MODEL_NAME
-    creation_config: dict = dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
-    max_message_tokens: int = MAX_MESSAGE_TOKENS
-    dialog_tool_signature: dict = Field(default_factory=dict)
-    available_tools: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_system_and_signature(self) -> Self:
-        self.system = (
-            self.dialog_tool_signature.get("system", self.system).strip()
-            + f"\n\n<tool_selection_guidelines>\n{SELECT_TOOLS}\n</tool_selection_guidelines>"
-        ).strip()
-        if "system" in self.dialog_tool_signature:
-            del self.dialog_tool_signature["system"]
-        return self
-
-    @field_validator("max_message_tokens")
-    @classmethod
-    def validate_max_message_tokens(cls, v: int) -> int:
-        if "gpt" in cls.model_name.lower():
-            return 100_000
-        elif "claude" in cls.model_name.lower():
-            return 175_000
-        elif "gemini" in cls.model_name.lower():
-            return 800_000
-        return v
-
-
-class Task(BaseModel):
-    id: UUID4 = Field(default_factory=lambda: uuid4())
-    name: str = ""
-    dialog_id: UUID4
-    messages: Messages = Field(default_factory=list)
-
-
-class TaskTool(BaseModel):
-    id: int
-    position: int
-    task_id: UUID4
-    tool: Tool
-    used: bool = False
-
-
 def dialog_to_kwargs(dialog: Dialog, messages: Messages | None = None) -> dict:
     messages = messages or []
     kwargs = messages_to_kwargs(
@@ -324,40 +306,38 @@ def dialog_to_kwargs(dialog: Dialog, messages: Messages | None = None) -> dict:
         kwargs["generation_config"] = dialog.creation_config
     else:
         kwargs.update(dialog.creation_config)
-    # logger.info(f"KWARGS: {kwargs}")
     return kwargs
 
 
-class MemoryTagInfo(BaseModel):
-    description: str
-    use_cases: list[str]
-
-
-class MemoryTag(Enum):
-    CORE = MemoryTagInfo(
-        description="Messages that are crucial and should persist even after the dialog concludes",
-        use_cases=[
-            "Factual information that won't change",
-            "Important facts about the user",
-            "Long-term preferences",
-            "Critical instructions or rules",
-            "User feedback intended to improve future interactions",
-        ],
-    )
-    RECALL = MemoryTagInfo(
-        description="Messages relevant to the current task and should be remembered during the ongoing dialog",
-        use_cases=["Current task parameters", "Intermediate results", "Temporary user preferences"],
-    )
-
-
-class MemoryTags(BaseModel):
-    reasoning: str
-    memory_tags: list[Literal[*MemoryTag._member_names_]]  # type: ignore
-
-    @field_validator("memory_tags")
-    @classmethod
-    def validate_memory_tags(cls, v: list[str]) -> list[str]:
-        return list(set(v) | {DEFAULT_TAG})
+def summarize_messages(
+    messages: Messages, summarizer_dialog: Dialog | None = None, max_message_tokens: int = MAX_MESSAGE_TOKENS
+) -> tuple[Messages, Summary | None]:
+    if summarizer_dialog is None:
+        return messages, None
+    messages = deepcopy(messages)
+    messages, trimmed_messages = trim_messages(messages=messages, max_message_tokens=max_message_tokens)
+    if not trimmed_messages:
+        return messages, None
+    try:
+        creator = create_creator(model_name=summarizer_dialog.model_name)
+        summary: Summary = creator.create(
+            **dialog_to_kwargs(
+                dialog=summarizer_dialog,
+                messages=trimmed_messages + [user_message(content="Summarize the conversation so far.")],
+            ),
+            response_model=Summary,  # type: ignore
+        )
+        summary_message = user_message(
+            content=f"<summary_of_our_previous_conversation(s)>\n{json.dumps(summary.model_dump(), indent=2)}\n</summary_of_our_previous_conversation(s)>"
+        )
+        if messages[0]["role"] == "system":
+            messages = [messages[0], summary_message] + messages[1:]
+        else:
+            messages = [summary_message] + messages
+        return messages, summary
+    except Exception:
+        logger.exception(f"Could not summarize messages: {trimmed_messages[-2:]}")
+        return messages, None
 
 
 def add_message(
@@ -367,26 +347,15 @@ def add_message(
     template: Content = "",
     purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE,
     message: MessageType | None = None,
-    memory_tagger_dialog: Dialog | None = None,
+    summarizer_dialog: Dialog | None = None,
 ) -> Task | Dialog:
     if content is None:
         return task_or_dialog
-    message = message or chat_message(role=role, content=content, template=template, purpose=purpose)
-    if memory_tagger_dialog is not None:
-        try:
-            memory_tagger_dialog.messages += task_or_dialog.messages + [message]
-            creator = create_creator(model_name=memory_tagger_dialog.model_name)
-            memory_tags: MemoryTags = creator.create(
-                **dialog_to_kwargs(dialog=memory_tagger_dialog),
-                response_model=MemoryTags,  # type: ignore
-            )
-        except Exception:
-            logger.exception(
-                f"Could not add tag to message: {message['content'][:100]}\nDefaulting to {DEFAULT_TAG}"
-            )
-            memory_tags = MemoryTags(reasoning="", memory_tags=[DEFAULT_TAG])
-        message["memory_tags"] = memory_tags.memory_tags
-    task_or_dialog.messages.append(message)
+    task_or_dialog.messages = summarize_messages(
+        messages=task_or_dialog.messages
+        + [message or chat_message(role=role, content=content, template=template, purpose=purpose)],
+        summarizer_dialog=summarizer_dialog,
+    )[0]
     return task_or_dialog
 
 
@@ -397,7 +366,7 @@ def add_dialog_message(
     template: Content = "",
     purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE,
     message: MessageType | None = None,
-    memory_tagger_dialog: Dialog | None = None,
+    summarizer_dialog: Dialog | None = None,
 ) -> Dialog:
     return cast(
         Dialog,
@@ -408,7 +377,7 @@ def add_dialog_message(
             template=template,
             purpose=purpose,
             message=message,
-            memory_tagger_dialog=memory_tagger_dialog,
+            summarizer_dialog=summarizer_dialog,
         ),
     )
 

@@ -2,7 +2,6 @@ from loguru import logger
 from tortoise import run_async
 
 from ayy.dialog import Dialog, ModelName
-from ayy.dialogs import MEMORY_TAGGER_DIALOG
 from ayy.leggo import new_task
 from ayy.torm import init_db, save_dialog
 
@@ -18,7 +17,6 @@ async def setup():
     await save_dialog(
         dialog=Dialog(model_name=MODEL_NAME, name="default_dialog"), db_name=DB_NAME, overwrite=False
     )
-    await save_dialog(dialog=MEMORY_TAGGER_DIALOG, db_name=DB_NAME, overwrite=False)
 
 
 if __name__ == "__main__":
@@ -33,7 +31,6 @@ if __name__ == "__main__":
             # task_query="list the grounds in london",
             # task_query="list the grounds in manchester and the weather there on tue",
             task_query="weather on tuesday?",
-            memory_tagger_dialog=MEMORY_TAGGER_DIALOG,
         )
     )
     logger.success("Task done")

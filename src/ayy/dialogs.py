@@ -1,43 +1,14 @@
-from ayy.dialog import Dialog, MemoryTag, ModelName, exchange
+from ayy.dialog import Dialog, ModelName, exchange
+from ayy.memory import SemanticCategory
 from ayy.prompts import NAME_DIALOG, SUMMARIZE_MESSAGES
 
 DIALOG_NAMER_DIALOG = Dialog(model_name=ModelName.GEMINI_FLASH, system=NAME_DIALOG, name="dialog_namer_dialog")
 
-MEMORY_TAGGER_DIALOG = Dialog(
-    model_name=ModelName.GEMINI_FLASH,
-    system=f"Tag the latest message. Possible tags are {str(MemoryTag.__members__)}",
-    messages=[
-        *exchange(
-            user="it's sunny today",
-            assistant="reasoning: This is current weather information that will change. memory_tags: ['RECALL']",
-        ),
-        *exchange(
-            user="I love sunny days",
-            assistant="reasoning: This expresses a general preference which is a permanent trait. memory_tags: ['CORE']",
-        ),
-        *exchange(
-            user="My name is Hamza",
-            assistant="reasoning: This is temporary identifying information. memory_tags: ['RECALL']",
-            feedback="My name is a permanent thing. The tag for permanent things should be CORE",
-            correction="reasoning: You're right - a name is permanent identifying information. Apologies, I made a mistake. memory_tags: ['CORE']",
-        ),
-        *exchange(
-            user="I'm going to the store",
-            assistant="reasoning: This seems like a permanent activity. memory_tags: ['CORE']",
-            feedback="Going to the store is a temporary activity, not a permanent fact. It should be RECALL",
-            correction="reasoning: You're correct - this is a temporary activity. You're right, I apologize. memory_tags: ['RECALL']",
-        ),
-        *exchange(
-            user="I'm planning a trip to visit my family in New York",
-            assistant="reasoning: The trip is temporary but having family in New York is permanent information. memory_tags: ['RECALL', 'CORE']",
-        ),
-    ],
-    name="memory_tagger_dialog",
-)
 
 SUMMARIZER_DIALOG = Dialog(
     model_name=ModelName.GEMINI_FLASH,
-    system=SUMMARIZE_MESSAGES,
+    system=SUMMARIZE_MESSAGES
+    + f"\nAvailable categories for semantic memories: {SemanticCategory._member_names_}",
     messages=[
         *exchange(user="My name is Hamza", assistant="Hey Hamza, how can I help you today?"),
         *exchange(
@@ -76,33 +47,43 @@ SUMMARIZER_DIALOG = Dialog(
                     "Flight booked: Saturday morning direct flight to JFK",
                     "Airport pickup arranged with family"
                 ],
-                "core_information": [
+                "semantic_memories": [
                     {
                         "name": "personal_info",
                         "content": "User's name is Hamza",
-                        "temporary": False
+                        "category": "identity",
+                        "confidence": 1.0,
                     },
                     {
-                        "name": "family_info",
-                        "content": "Has family in New York who will provide airport pickup",
-                        "temporary": False
+                        "name": "family_location",
+                        "content": "Has family in New York",
+                        "category": "relationships",
+                        "confidence": 1.0,
                     },
                     {
-                        "name": "preference",
+                        "name": "travel_preferences",
                         "content": "Prefers sunny weather and morning flights",
-                        "temporary": False
+                        "category": "preferences",
+                        "confidence": 0.8,
                     }
                 ],
-                "temporary_information": [
+                "episodic_memories": [
                     {
-                        "name": "flight_details",
+                        "name": "flight_booking",
                         "content": {
                             "flight_number": "AA1234",
                             "departure": "8:30 AM Saturday",
                             "arrival": "11:45 AM",
                             "confirmation": "XYZ789"
                         },
-                        "temporary": True
+                        "context": "current_trip",
+                        "confidence": 1.0,
+                    },
+                    {
+                        "name": "airport_pickup",
+                        "content": "Family will provide airport pickup",
+                        "context": "current_trip",
+                        "confidence": 1.0,
                     }
                 ]
             }""",
