@@ -59,7 +59,7 @@ class Tool(BaseModel):
         return f"Reasoning: {self.reasoning}\nName: {self.name}\nPrompt: {self.prompt}"
 
 
-def load_content(content: Any, echo: bool = True) -> Any:
+def load_content(content: Any, echo: bool = False) -> Any:
     if not isinstance(content, (str, Path)):
         return content
     else:
