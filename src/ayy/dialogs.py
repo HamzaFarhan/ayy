@@ -7,8 +7,7 @@ DIALOG_NAMER_DIALOG = Dialog(model_name=ModelName.GEMINI_FLASH, system=NAME_DIAL
 
 SUMMARIZER_DIALOG = Dialog(
     model_name=ModelName.GEMINI_FLASH,
-    system=SUMMARIZE_MESSAGES
-    + f"\nAvailable categories for semantic memories: {SemanticCategory._member_names_}",
+    system=SUMMARIZE_MESSAGES + f"\nAvailable categories for semantic memories: {SemanticCategory._member_names_}",
     messages=[
         *exchange(user="My name is Hamza", assistant="Hey Hamza, how can I help you today?"),
         *exchange(

@@ -184,6 +184,15 @@ class Dialog(BaseModel):
             del self.dialog_tool_signature["system"]
         return self
 
+    @field_validator("creation_config")
+    @classmethod
+    def validate_creation_config(cls, v: dict) -> dict:
+        return {
+            **v,
+            "temperature": v.get("temperature", TEMPERATURE),
+            "max_tokens": v.get("max_tokens", MAX_TOKENS),
+        }
+
     @field_validator("max_message_tokens")
     @classmethod
     def validate_max_message_tokens(cls, v: int) -> int:
