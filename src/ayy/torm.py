@@ -1,3 +1,5 @@
+from importlib import import_module
+
 from loguru import logger
 from pydantic import UUID4, BaseModel
 from tortoise import Tortoise, connections
@@ -5,7 +7,6 @@ from tortoise.contrib.pydantic import pydantic_model_creator, pydantic_queryset_
 from tortoise.expressions import F
 from tortoise.transactions import in_transaction
 
-from ayy import tools as tools_module
 from ayy.db_models import DEFAULT_APP_NAME
 from ayy.db_models import Dialog as DBDialog
 from ayy.db_models import Task as DBTask
@@ -15,20 +16,7 @@ from ayy.func_utils import get_functions_from_module
 
 DEFAULT_DB_NAME = "tasks_db"
 TOOL_FIELDS = ["reasoning", "name", "prompt"]
-
-
-# def db_dialog_tool_to_dialog_tool(
-#     db_dialog_tool: BaseModel | dict, tool_fields: list[str] = TOOL_FIELDS
-# ) -> DialogTool:
-#     if isinstance(db_dialog_tool, BaseModel):
-#         db_dialog_tool = db_dialog_tool.model_dump()
-#     return DialogTool(
-#         id=db_dialog_tool["id"],
-#         position=db_dialog_tool["position"],
-#         dialog_id=db_dialog_tool["dialog"]["id"],
-#         tool=Tool(**{k: v for k, v in db_dialog_tool.items() if k in tool_fields}),
-#         used=db_dialog_tool["used"],
-#     )
+DEFAULT_TOOLS_MODULE = "ayy.tools"
 
 
 def db_task_tool_to_task_tool(db_task_tool: BaseModel | dict, tool_fields: list[str] = TOOL_FIELDS) -> TaskTool:
@@ -57,28 +45,6 @@ async def init_db(db_names: list[str] | str = DEFAULT_DB_NAME, app_names: list[s
         }
     )
     await Tortoise.generate_schemas()
-
-
-# async def get_next_dialog_tool(
-#     dialog: UUID4 | Dialog,
-#     db_name: str = DEFAULT_DB_NAME,
-#     used: bool = False,
-#     reverse: bool = False,
-#     position: int | None = None,
-# ) -> DialogTool | None:
-#     dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
-#     dialog_tools = DBDialogTool.filter(dialog_id=dialog_id).using_db(connections.get(db_name))
-#     if position is not None:
-#         dialog_tools = await dialog_tools.filter(position=position).first()
-#     else:
-#         dialog_tools = (
-#             await dialog_tools.filter(used=used).order_by("position" if not reverse else "-position").first()
-#         )
-#     if dialog_tools is None:
-#         return None
-#     tool_model = pydantic_model_creator(DBDialogTool)
-#     tool_model = await tool_model.from_tortoise_orm(await dialog_tools)
-#     return db_dialog_tool_to_dialog_tool(db_dialog_tool=tool_model)
 
 
 async def get_next_task_tool(
@@ -110,70 +76,12 @@ async def get_dialogs_with_signatures(db_name: str = DEFAULT_DB_NAME) -> list[Di
     return [Dialog(**dialog) for dialog in dialogs.model_dump()]
 
 
-# async def get_dialog_tools(
-#     dialog: UUID4 | Dialog, db_name: str = DEFAULT_DB_NAME, used: bool = False
-# ) -> list[DialogTool]:
-#     dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
-#     dialog_tools = await pydantic_queryset_creator(DBDialogTool).from_queryset(
-#         DBDialogTool.filter(dialog_id=dialog_id, used=used).order_by("position").using_db(connections.get(db_name))
-#     )
-#     return [db_dialog_tool_to_dialog_tool(db_dialog_tool=tool) for tool in dialog_tools.model_dump()]
-
-
 async def get_task_tools(task: UUID4 | Task, db_name: str = DEFAULT_DB_NAME, used: bool = False) -> list[TaskTool]:
     task_id = task.id if isinstance(task, Task) else task
     task_tools = await pydantic_queryset_creator(DBTaskTool).from_queryset(
         DBTaskTool.filter(task_id=task_id, used=used).order_by("position").using_db(connections.get(db_name))
     )
     return [db_task_tool_to_task_tool(db_task_tool=tool) for tool in task_tools.model_dump()]
-
-
-# async def add_dialog_tools(
-#     dialog: UUID4 | Dialog,
-#     tools: list[Tool] | Tool,
-#     db_name: str = DEFAULT_DB_NAME,
-#     position: int | None = None,
-#     used: bool = False,
-#     run_next: bool = False,
-#     replace_all: bool = False,
-#     tool_fields: list[str] = TOOL_FIELDS,
-# ) -> None:
-#     tools = [tools] if isinstance(tools, Tool) else tools
-#     conn = connections.get(db_name)
-#     dialog_id = dialog.id if isinstance(dialog, Dialog) else dialog
-#     async with in_transaction():
-#         conn = connections.get(db_name)
-#         dialog_tools = DBDialogTool.filter(dialog_id=dialog_id).using_db(conn)
-#         if replace_all:
-#             await dialog_tools.delete()
-#             start_position = 1
-#         else:
-#             if run_next:
-#                 first_unused = await dialog_tools.filter(used=False).order_by("position").first()
-#                 start_position = 1 if first_unused is None else first_unused.position
-#                 await dialog_tools.filter(position__gte=start_position).update(position=F("position") + len(tools))
-#             else:
-#                 query = dialog_tools.order_by("-position")
-#                 latest_tool = await query.first()
-#                 if latest_tool is None:
-#                     latest_position = 0
-#                 else:
-#                     latest_position = latest_tool.position
-#                 logger.info(f"latest_position: {latest_position}")
-#                 if position is not None:
-#                     await dialog_tools.filter(position__gte=position).update(position=F("position") + len(tools))
-#                     start_position = position
-#                 else:
-#                     start_position = latest_position + 1
-#         for i, tool in enumerate(tools, start=start_position):
-#             logger.info(f"tool: {tool}")
-#             await DBDialogTool.create(
-#                 using_db=conn,
-#                 dialog_id=dialog_id,
-#                 position=i,
-#                 used=used,
-#                 **tool.model_dump(include=set(tool_fields)),
-#             )
 
 
 async def add_task_tools(
@@ -220,12 +128,6 @@ async def add_task_tools(
             )
 
 
-# async def toggle_dialog_tool_usage(dialog_tool_id: int, db_name: str = DEFAULT_DB_NAME) -> None:
-#     tool = await DBDialogTool.get(id=dialog_tool_id, using_db=connections.get(db_name))
-#     tool.used = not tool.used
-#     await tool.save()
-
-
 async def toggle_task_tool_usage(task_tool_id: int, db_name: str = DEFAULT_DB_NAME) -> None:
     tool = await DBTaskTool.get(id=task_tool_id, using_db=connections.get(db_name))
     tool.used = not tool.used
@@ -259,22 +161,20 @@ async def load_task(task: UUID4 | str | Task, db_name: str = DEFAULT_DB_NAME) ->
 
 async def save_dialog(
     dialog: Dialog,
-    # task: Task | None = None,
     db_name: str = DEFAULT_DB_NAME,
     dialog_tool_signature: DialogToolSignature | None = None,
+    tools_module: str = DEFAULT_TOOLS_MODULE,
     overwrite: bool = True,
 ) -> None:
     conn = connections.get(db_name)
     dialog_dict = dialog.model_dump()
-    if dialog_tool_signature is not None and dialog_tool_signature.name not in [
-        f[0] for f in get_functions_from_module(tools_module)
-    ]:
-        dialog_dict["system"] = dialog_tool_signature.system
-        dialog_dict["name"] = dialog_tool_signature.name
-        dialog_dict["dialog_tool_signature"] = dialog_tool_signature.model_dump()
-    # if task is not None:
-    #     dialog_dict["messages"] += task.messages
-    #     await save_task(task=task, db_name=db_name)
+    if dialog_tool_signature is not None:
+        if dialog_tool_signature.name not in [
+            f[0] for f in get_functions_from_module(import_module(tools_module))
+        ]:
+            dialog_dict["system"] = dialog_tool_signature.system
+            dialog_dict["name"] = dialog_tool_signature.name
+            dialog_dict["dialog_tool_signature"] = dialog_tool_signature.model_dump()
     existing_dialog = await DBDialog.filter(name=dialog.name).using_db(conn).first() if dialog.name != "" else None
     if existing_dialog is None:
         existing_dialog = await DBDialog.filter(id=dialog.id).using_db(conn).first()

@@ -104,7 +104,7 @@ def function_to_type(
     ignore_default_values: bool = False,
     skip_default_params: bool = False,
     params_to_skip: list[str] | None = None,
-) -> type:
+) -> type | None:
     if isinstance(func, type):
         return func
     kw = {
@@ -121,6 +121,8 @@ def function_to_type(
             )
         ).parameters.items()
     }
+    if not kw:
+        return None
     if isinstance(func, partial):
         func = func.func
     return create_model(func.__name__, __doc__=inspect.getdoc(func), **kw)  # type:ignore

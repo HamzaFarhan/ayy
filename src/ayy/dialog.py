@@ -79,6 +79,8 @@ MessageType = dict[str, Content]
 class MessagePurpose(StrEnum):
     SUMMARY = "summary"
     CONVO = "convo"
+    AVAILABLE_TOOLS = "available_tools"
+    RECOMMENDED_TOOLS = "recommended_tools"
     TOOL = "tool"
     ERROR = "error"
 
@@ -169,7 +171,7 @@ class Dialog(BaseModel):
     messages: Messages = Field(default_factory=list)
     model_name: ModelName = MODEL_NAME
     creation_config: dict = dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
-    max_message_tokens: int = MAX_MESSAGE_TOKENS
+    max_message_tokens: int | None = None
     dialog_tool_signature: dict = Field(default_factory=dict)
     available_tools: list[str] = Field(default_factory=list)
     include_tool_guidelines: bool = True
@@ -193,16 +195,17 @@ class Dialog(BaseModel):
             "max_tokens": v.get("max_tokens", MAX_TOKENS),
         }
 
-    @field_validator("max_message_tokens")
-    @classmethod
-    def validate_max_message_tokens(cls, v: int) -> int:
-        if "gpt" in cls.model_name.lower():
-            return 100_000
-        elif "claude" in cls.model_name.lower():
-            return 175_000
-        elif "gemini" in cls.model_name.lower():
-            return 800_000
-        return v
+    @model_validator(mode="after")
+    def validate_max_message_tokens(self) -> Self:
+        if self.max_message_tokens is not None:
+            return self
+        if "gpt" in self.model_name.lower():
+            self.max_message_tokens = 100_000
+        elif "claude" in self.model_name.lower():
+            self.max_message_tokens = 175_000
+        elif "gemini" in self.model_name.lower():
+            self.max_message_tokens = 800_000
+        return self
 
 
 class Task(BaseModel):
@@ -277,7 +280,23 @@ def trim_messages(
             break
         total_tokens += msg_tokens
         trim_idx -= 1
-    return system_msg + working_messages[trim_idx + 1 :], working_messages[: trim_idx + 1]
+    trimmed_messages = working_messages[: trim_idx + 1]
+    if (
+        trimmed_messages
+        and trimmed_messages[-1].get("purpose", MessagePurpose.CONVO) == MessagePurpose.AVAILABLE_TOOLS
+    ):
+        trim_idx = max(-1, trim_idx - 1)
+    trimmed_messages = working_messages[: trim_idx + 1]
+    if (
+        len(trimmed_messages) == 1
+        and trimmed_messages[0].get("purpose", MessagePurpose.CONVO) == MessagePurpose.SUMMARY
+    ):
+        trim_idx = max(-1, trim_idx - 1)
+    return system_msg + working_messages[trim_idx + 1 :], [
+        message
+        for message in working_messages[: trim_idx + 1]
+        if message.get("purpose", MessagePurpose.CONVO) == MessagePurpose.CONVO
+    ]
 
 
 def messages_to_kwargs(
@@ -290,9 +309,8 @@ def messages_to_kwargs(
     messages = deepcopy(messages)
     messages, _ = trim_messages(messages=messages, max_message_tokens=max_message_tokens)
     kwargs = {"messages": [chat_message(role=message["role"], content=message["content"]) for message in messages]}
-    first_message = messages[0]
-    if first_message["role"] == "system":
-        system = system or first_message["content"]
+    if messages and messages[0]["role"] == "system":
+        system = system or messages[0]["content"]
         kwargs["messages"][0]["content"] = system
     else:
         kwargs["messages"].insert(0, system_message(content=system))
@@ -309,7 +327,7 @@ def dialog_to_kwargs(dialog: Dialog, messages: Messages | None = None) -> dict:
         messages=dialog.messages + [message for message in messages if message["role"] != "system"],
         system=dialog.system,
         model_name=dialog.model_name,
-        max_message_tokens=dialog.max_message_tokens,
+        max_message_tokens=dialog.max_message_tokens or MAX_MESSAGE_TOKENS,
     )
     if "gemini" in dialog.model_name.lower():
         kwargs["generation_config"] = dialog.creation_config
@@ -321,12 +339,17 @@ def dialog_to_kwargs(dialog: Dialog, messages: Messages | None = None) -> dict:
 def summarize_messages(
     messages: Messages, summarizer_dialog: Dialog | None = None, max_message_tokens: int = MAX_MESSAGE_TOKENS
 ) -> tuple[Messages, Summary | None]:
+    # return messages, None
     if summarizer_dialog is None:
         return messages, None
     messages = deepcopy(messages)
     messages, trimmed_messages = trim_messages(messages=messages, max_message_tokens=max_message_tokens)
+    logger.info(
+        f"Called trim_messages with max_message_tokens={max_message_tokens}. Got messages: {messages[-2:]}, trimmed_messages: {trimmed_messages[-2:]}"
+    )
     if not trimmed_messages:
         return messages, None
+    logger.info(f"Summarizing messages: {trimmed_messages[-2:]}")
     try:
         creator = create_creator(model_name=summarizer_dialog.model_name)
         summary: Summary = creator.create(
@@ -336,13 +359,18 @@ def summarize_messages(
             ),
             response_model=Summary,  # type: ignore
         )
+        episodic_explanation = """
+Episodic memories are relevant to ongoing tasks. They are memories of the current context and parameters, intermediate steps or results, short-term preferences or needs, time-sensitive details, and recent interactions or decisions.
+"""
         summary_message = user_message(
-            content=f"<summary_of_our_previous_conversation(s)>\n{json.dumps(summary.model_dump(), indent=2)}\n</summary_of_our_previous_conversation(s)>"
+            content=f"<summary_of_our_previous_conversation(s)>\n{summary.summary_str(semantic=False, episodic=True)}\n</summary_of_our_previous_conversation(s)>\n\n{episodic_explanation}",
+            purpose=MessagePurpose.SUMMARY,
         )
-        if messages[0]["role"] == "system":
+        if messages and messages[0]["role"] == "system":
             messages = [messages[0], summary_message] + messages[1:]
         else:
             messages = [summary_message] + messages
+        logger.success("Summarized messages")
         return messages, summary
     except Exception:
         logger.exception(f"Could not summarize messages: {trimmed_messages[-2:]}")
@@ -360,10 +388,14 @@ def add_message(
 ) -> Task | Dialog:
     if content is None:
         return task_or_dialog
+    max_message_tokens = (
+        task_or_dialog.max_message_tokens if isinstance(task_or_dialog, Dialog) else MAX_MESSAGE_TOKENS
+    )
     task_or_dialog.messages = summarize_messages(
         messages=task_or_dialog.messages
         + [message or chat_message(role=role, content=content, template=template, purpose=purpose)],
         summarizer_dialog=summarizer_dialog,
+        max_message_tokens=max_message_tokens or MAX_MESSAGE_TOKENS,
     )[0]
     return task_or_dialog
 

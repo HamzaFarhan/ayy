@@ -22,22 +22,6 @@ class Dialog(models.Model):
         table = "dialog"
 
 
-# class DialogTool(models.Model):
-#     id = fields.IntField(pk=True)
-#     dialog = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Dialog", related_name="dialog_tool")
-#     position = fields.IntField()
-#     reasoning = fields.TextField()
-#     name = fields.CharField(max_length=255)
-#     prompt = fields.TextField()
-#     used = fields.BooleanField(default=False)
-#     timestamp = fields.DatetimeField(auto_now_add=True)
-
-#     class Meta:  # type: ignore
-#         app = DEFAULT_APP_NAME
-#         table = "dialog_tool"
-#         ordering = ["dialog_id", "position"]
-
-
 class Task(models.Model):
     id = fields.UUIDField(pk=True)
     name = fields.CharField(max_length=255, default="")
@@ -63,3 +47,19 @@ class TaskTool(models.Model):
         app = DEFAULT_APP_NAME
         table = "task_tool"
         ordering = ["task_id", "position"]
+
+
+class SemanticMemoryDB(models.Model):
+    id = fields.UUIDField(pk=True)
+    name = fields.CharField(max_length=255)
+    content = fields.TextField()
+    category = fields.CharField(max_length=255)
+    confidence = fields.FloatField(default=1.0)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+    last_dialog = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Dialog", related_name="semantic_memory", null=True)
+    last_task = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Task", related_name="semantic_memory", null=True)
+
+    class Meta:  # type: ignore
+        app = DEFAULT_APP_NAME
+        table = "semantic_memory"
