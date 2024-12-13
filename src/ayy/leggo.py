@@ -6,7 +6,7 @@ from typing import Any, Callable, Literal
 
 from instructor import AsyncInstructor, Instructor
 from loguru import logger
-from pydantic import UUID4, BaseModel, create_model
+from pydantic import UUID4, BaseModel, Field, create_model
 
 from ayy.dialog import (
     Dialog,
@@ -25,6 +25,7 @@ from ayy.dialog import (
 )
 from ayy.dialogs import DIALOG_NAMER_DIALOG, SUMMARIZER_DIALOG
 from ayy.func_utils import function_to_type, get_function_info, get_functions_from_module
+from ayy.prompts import MOVE_ON
 from ayy.torm import (
     add_task_tools,
     get_dialogs_with_signatures,
@@ -44,6 +45,17 @@ CONTINUE_DIALOG = True
 DEFAULT_PROMPT = "Generate a response if you've been asked. Otherwise, ask the user how they are doing."
 DEFAULT_TOOL = Tool(reasoning="", name="call_ai", prompt=DEFAULT_PROMPT)
 TOOL_ATTEMPT_LIMIT = 3
+
+
+class MoveOn(BaseModel):
+    information_so_far: str
+    move_on: bool = False
+    next_assistant_task: str = Field(
+        default="", description="The task from the user that the assistant should respond to or complete."
+    )
+    next_user_prompt: str = Field(
+        default="", description="The prompt to ask the user for the remaining information."
+    )
 
 
 class TaskQuery(BaseModel):
@@ -73,28 +85,126 @@ def get_dialog_signature(dialog: Dialog) -> DialogToolSignature | None:
     return None if namer_res.name == "" else namer_res  # type: ignore
 
 
-async def run_ask_user(
+async def _continue_dialog(
+    db_name: str,
+    task: Task,
+    dialog: Dialog,
+    seq: int,
+    last_used_tool: Tool,
+    creator: Instructor | AsyncInstructor,
+    available_tools: list[str] | set[str] | None = None,
+    summarizer_dialog: Dialog | None = SUMMARIZER_DIALOG,
+) -> tuple[Task, Dialog]:
+    while True:
+        if seq % 2 == 0 or last_used_tool.name == "call_ai":
+            user_input = input("('q' or 'exit' or 'quit' to quit) > ")
+            if user_input.lower().strip() in ["q", "exit", "quit"]:
+                return task, dialog
+            task, dialog = await new_task(
+                db_name=db_name,
+                dialog=dialog,
+                task_query=user_input,
+                available_tools=available_tools,
+                continue_dialog=False,
+                summarizer_dialog=summarizer_dialog,
+            )
+        else:
+            await add_task_tools(task=task, tools=DEFAULT_TOOL, db_name=db_name, used=True)
+            try:
+                res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
+                logger.success(f"ai response: {res}")
+                res_message = assistant_message(content=res)
+            except Exception as e:
+                logger.exception("Error calling AI after continuing dialog")
+                res_message = assistant_message(
+                    content=f"Whoops! Something went wrong. Here's the error:\n{e}",
+                    purpose=MessagePurpose.ERROR,
+                )
+            logger.info(f"adding message: {res_message['content']}")
+            task = add_task_message(task=task, message=res_message)
+            dialog = add_dialog_message(dialog=dialog, message=res_message, summarizer_dialog=summarizer_dialog)
+            await save_dialog(dialog=dialog, db_name=db_name)
+            await save_task(task=task, db_name=db_name)
+        seq += 1
+
+
+async def _run_ask_user(
     db_name: str,
     task: UUID4 | str | Task,
     dialog: UUID4 | str | Dialog,
-    tool: Tool,
+    task_query: str = "",
     summarizer_dialog: Dialog | None = SUMMARIZER_DIALOG,
-) -> Task:
+) -> tuple[Task, Dialog]:
     task = await load_task(task=task, db_name=db_name)
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
-    tool.prompt = tool.prompt or DEFAULT_PROMPT
-    res = input(f"{tool.prompt}\n> ")
-    task = add_task_message(task=task, message=assistant_message(content=tool.prompt))
+    task_query = task_query or DEFAULT_PROMPT
+    res = input(f"{task_query}\n> ")
+    task = add_task_message(task=task, message=assistant_message(content=task_query))
     task = add_task_message(task=task, message=user_message(content=res))
     dialog = add_dialog_message(
-        dialog=dialog, message=assistant_message(content=tool.prompt), summarizer_dialog=summarizer_dialog
+        dialog=dialog, message=assistant_message(content=task_query), summarizer_dialog=summarizer_dialog
     )
     dialog = add_dialog_message(
         dialog=dialog, message=user_message(content=res), summarizer_dialog=summarizer_dialog
     )
     await save_dialog(dialog=dialog, db_name=db_name)
     await save_task(task=task, db_name=db_name)
-    return task
+    return task, dialog
+
+
+async def run_ask_user(
+    db_name: str,
+    task: UUID4 | str | Task,
+    dialog: UUID4 | str | Dialog,
+    task_query: str = "",
+    creator: Instructor | AsyncInstructor | None = None,
+    available_tools: list[str] | set[str] | None = None,
+    summarizer_dialog: Dialog | None = SUMMARIZER_DIALOG,
+) -> tuple[Task, Dialog]:
+    task = await load_task(task=task, db_name=db_name)
+    dialog = await load_dialog(dialog=dialog, db_name=db_name)
+    creator = creator or create_creator(model_name=dialog.model_name)
+    move_on = MoveOn(information_so_far="", next_user_prompt=task_query)
+    while not move_on.move_on:
+        if not move_on.next_user_prompt and not move_on.next_assistant_task:
+            break
+        if move_on.next_assistant_task:
+            task, dialog = await new_task(
+                db_name=db_name,
+                dialog=dialog,
+                task_query=move_on.next_assistant_task,
+                available_tools=available_tools,
+                continue_dialog=False,
+                summarizer_dialog=summarizer_dialog,
+            )
+        else:
+            task, dialog = await _run_ask_user(
+                db_name=db_name,
+                task=task,
+                dialog=dialog,
+                task_query=move_on.next_user_prompt,
+                summarizer_dialog=summarizer_dialog,
+            )
+        try:
+            move_on: MoveOn = creator.create(
+                **dialog_to_kwargs(
+                    dialog=dialog,
+                    messages=[user_message(content=MOVE_ON)],
+                ),
+                response_model=MoveOn,
+            )  # type: ignore
+            logger.info(f"move_on: {move_on}")
+        except Exception:
+            logger.exception("Error getting move_on")
+            move_on = MoveOn(information_so_far="", move_on=True, next_user_prompt="")
+    if move_on.information_so_far:
+        info_message = assistant_message(
+            content=f"<information_so_far>\n{move_on.information_so_far}\n</information_so_far>",
+            purpose=MessagePurpose.TOOL,
+        )
+        dialog = add_dialog_message(dialog=dialog, message=info_message)
+        await save_dialog(dialog=dialog, db_name=db_name)
+    return task, dialog
 
 
 async def run_call_ai(
@@ -104,7 +214,7 @@ async def run_call_ai(
     tool: Tool,
     creator: Instructor | AsyncInstructor | None = None,
     summarizer_dialog: Dialog | None = SUMMARIZER_DIALOG,
-) -> Task:
+) -> tuple[Task, Dialog]:
     task = await load_task(task=task, db_name=db_name)
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
     creator = creator or create_creator(model_name=dialog.model_name)
@@ -126,12 +236,12 @@ async def run_call_ai(
     dialog = add_dialog_message(dialog=dialog, message=res_message, summarizer_dialog=summarizer_dialog)
     await save_dialog(dialog=dialog, db_name=db_name)
     await save_task(task=task, db_name=db_name)
-    return task
+    return task, dialog
 
 
 async def get_selected_tools(
     db_name: str, task: UUID4 | str | Task, dialog: UUID4 | str | Dialog, selected_tools: list[Tool]
-) -> Task:
+) -> tuple[Task, Dialog]:
     "Get and push a list of selected tools for the task"
     task = await load_task(task=task, db_name=db_name)
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
@@ -144,15 +254,15 @@ async def get_selected_tools(
     await save_dialog(dialog=dialog, db_name=db_name)
     await save_task(task=task, db_name=db_name)
     await add_task_tools(task=task, tools=selected_tools, db_name=db_name)
-    return task
+    return task, dialog
 
 
 async def run_dialog_as_tool(db_name: str, dialog: UUID4 | str | Dialog, task_query: str) -> Task:
-    task = await new_task(db_name=db_name, dialog=dialog, task_query=task_query, continue_dialog=False)
+    task, _ = await new_task(db_name=db_name, dialog=dialog, task_query=task_query, continue_dialog=False)
     return task
 
 
-async def _run_selected_trool(selected_tool: Callable, tool_args: Any, is_async: bool = False) -> Any:
+async def _run_selected_tool(selected_tool: Callable, tool_args: Any, is_async: bool = False) -> Any:
     if tool_args is None:
         return selected_tool()
     if isinstance(tool_args, BaseModel):
@@ -172,13 +282,13 @@ async def run_tool(
     dialog: UUID4 | str | Dialog,
     tool: Tool,
     tool_is_dialog: bool = False,
-    available_tools: list[str] | set[str] | None = None,
     creator: Instructor | AsyncInstructor | None = None,
+    available_tools: list[str] | set[str] | None = None,
     ignore_default_values: bool = False,
     skip_default_params: bool = False,
     summarizer_dialog: Dialog | None = SUMMARIZER_DIALOG,
     tools_module: str = DEFAULT_TOOLS_MODULE,
-) -> Task:
+) -> tuple[Task, Dialog]:
     task = await load_task(task=task, db_name=db_name)
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
     tools = import_module(tools_module)
@@ -247,11 +357,13 @@ async def run_tool(
             await save_dialog(dialog=dialog, db_name=db_name)
         except Exception:
             pass
-    res = await _run_selected_trool(selected_tool=selected_tool, tool_args=tool_args, is_async=is_async)
+    res = await _run_selected_tool(selected_tool=selected_tool, tool_args=tool_args, is_async=is_async)
+    if isinstance(res, tuple) and isinstance(res[0], Task) and isinstance(res[1], Dialog):
+        res = res[0]
     logger.success(f"{tool.name} result: {res}")
     if isinstance(res, Task):
         if res.name in [dialog.name, task.name]:
-            return res
+            return res, dialog
         res = get_last_message(messages=res.messages, role="assistant")
         if res is not None:
             res = res["content"]
@@ -262,7 +374,7 @@ async def run_tool(
         dialog = add_dialog_message(dialog=dialog, message=res_message, summarizer_dialog=summarizer_dialog)
     await save_dialog(dialog=dialog, db_name=db_name)
     await save_task(task=task, db_name=db_name)
-    return task
+    return task, dialog
 
 
 async def run_selected_tool(
@@ -271,20 +383,20 @@ async def run_selected_tool(
     dialog: UUID4 | str | Dialog,
     tool: Tool,
     tool_is_dialog: bool = False,
-    available_tools: list[str] | set[str] | None = None,
     creator: Instructor | AsyncInstructor | None = None,
+    available_tools: list[str] | set[str] | None = None,
     summarizer_dialog: Dialog | None = SUMMARIZER_DIALOG,
     tools_module: str = DEFAULT_TOOLS_MODULE,
-) -> Task:
+) -> tuple[Task, Dialog]:
     task = await load_task(task=task, db_name=db_name)
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
     creator = creator or create_creator(model_name=dialog.model_name)
     if tool.name.lower() == "ask_user":
-        task = await run_ask_user(
-            db_name=db_name, task=task, dialog=dialog, tool=tool, summarizer_dialog=summarizer_dialog
+        task, dialog = await run_ask_user(
+            db_name=db_name, task=task, dialog=dialog, task_query=tool.prompt, summarizer_dialog=summarizer_dialog
         )
     elif tool.name.lower() == "call_ai":
-        task = await run_call_ai(
+        task, dialog = await run_call_ai(
             db_name=db_name,
             task=task,
             dialog=dialog,
@@ -293,7 +405,7 @@ async def run_selected_tool(
             summarizer_dialog=summarizer_dialog,
         )
     else:
-        task = await run_tool(
+        task, dialog = await run_tool(
             db_name=db_name,
             task=task,
             dialog=dialog,
@@ -304,7 +416,7 @@ async def run_selected_tool(
             summarizer_dialog=summarizer_dialog,
             tools_module=tools_module,
         )
-    return task
+    return task, dialog
 
 
 async def run_tools(
@@ -317,7 +429,7 @@ async def run_tools(
     continue_dialog: bool = CONTINUE_DIALOG,
     summarizer_dialog: Dialog | None = SUMMARIZER_DIALOG,
     tools_module: str = DEFAULT_TOOLS_MODULE,
-) -> Task:
+) -> tuple[Task, Dialog]:
     task = await load_task(task=task, db_name=db_name)
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
     creator = creator or create_creator(model_name=dialog.model_name)
@@ -329,7 +441,7 @@ async def run_tools(
         attempts = 0
         while attempts < TOOL_ATTEMPT_LIMIT:
             try:
-                task = await run_selected_tool(
+                task, dialog = await run_selected_tool(
                     db_name=db_name,
                     task=task,
                     creator=creator,
@@ -349,46 +461,26 @@ async def run_tools(
     used_tools = await get_task_tools(task=task, db_name=db_name, used=True)
     last_used_tool = used_tools[-1].tool if used_tools else DEFAULT_TOOL
     if continue_dialog:
-        seq = int(last_used_tool.name == "ask_user")
-        while True:
-            if seq % 2 == 0 or last_used_tool.name == "call_ai":
-                user_input = input("('q' or 'exit' or 'quit' to quit) > ")
-                if user_input.lower().strip() in ["q", "exit", "quit"]:
-                    return task
-                task = await new_task(
-                    db_name=db_name,
-                    dialog=dialog,
-                    task_query=user_input,
-                    available_tools=available_tools,
-                    continue_dialog=False,
-                    summarizer_dialog=summarizer_dialog,
-                )
-            else:
-                await add_task_tools(task=task, tools=DEFAULT_TOOL, db_name=db_name, used=True)
-                try:
-                    res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
-                    logger.success(f"ai response: {res}")
-                    res_message = assistant_message(content=res)
-                except Exception as e:
-                    logger.exception("Error calling AI after continuing dialog")
-                    res_message = assistant_message(
-                        content=f"Whoops! Something went wrong. Here's the error:\n{e}",
-                        purpose=MessagePurpose.ERROR,
-                    )
-                logger.info(f"adding message: {res_message['content']}")
-                task = add_task_message(task=task, message=res_message)
-                dialog = add_dialog_message(
-                    dialog=dialog, message=res_message, summarizer_dialog=summarizer_dialog
-                )
-                await save_dialog(dialog=dialog, db_name=db_name)
-                await save_task(task=task, db_name=db_name)
-            seq += 1
+        task, dialog = await _continue_dialog(
+            db_name=db_name,
+            task=task,
+            dialog=dialog,
+            seq=int(last_used_tool.name == "ask_user"),
+            last_used_tool=last_used_tool,
+            creator=creator,
+            available_tools=available_tools,
+            summarizer_dialog=summarizer_dialog,
+        )
 
     logger.success(f"Messages: {task.messages[-2:]}")
-    dialog_signature = get_dialog_signature(dialog=dialog)
+    dialog_signature = (
+        DialogToolSignature(**dialog.dialog_tool_signature)
+        if dialog.dialog_tool_signature
+        else get_dialog_signature(dialog=dialog)
+    )
     await save_dialog(dialog=dialog, db_name=db_name, dialog_tool_signature=dialog_signature)
     await save_task(task=task, db_name=db_name)
-    return task
+    return task, dialog
 
 
 async def new_task(
@@ -396,15 +488,16 @@ async def new_task(
     dialog: UUID4 | str | Dialog,
     task_query: str,
     task_name: str = "",
+    task: Task | None = None,
     creator: Instructor | AsyncInstructor | None = None,
     available_tools: list[str] | set[str] | None = None,
     recommended_tools: dict[int, str] | None = None,
     continue_dialog: bool = CONTINUE_DIALOG,
     summarizer_dialog: Dialog | None = SUMMARIZER_DIALOG,
     tools_module: str = DEFAULT_TOOLS_MODULE,
-) -> Task:
+) -> tuple[Task, Dialog]:
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
-    task = Task(name=task_name, dialog_id=dialog.id)
+    task = task or Task(name=task_name, dialog_id=dialog.id)
     tools = import_module(tools_module)
     dialogs = await get_dialogs_with_signatures(db_name=db_name)
 

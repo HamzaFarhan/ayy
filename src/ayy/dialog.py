@@ -177,7 +177,8 @@ class Dialog(BaseModel):
     include_tool_guidelines: bool = True
 
     @model_validator(mode="after")
-    def validate_system_and_signature(self) -> Self:
+    def validate_signature(self) -> Self:
+        self.name = self.dialog_tool_signature.get("name", self.name).strip()
         self.system = self.dialog_tool_signature.get("system", self.system).strip()
         if self.include_tool_guidelines:
             self.system += f"\n\n<tool_selection_guidelines>\n{SELECT_TOOLS}\n</tool_selection_guidelines>"

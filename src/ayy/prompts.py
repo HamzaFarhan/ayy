@@ -23,6 +23,51 @@ When to use 'call_ai':
     - To extract information before the next tool call.
 """
 
+MOVE_ON = """
+Analyze the conversation so far and determine if we have enough information to proceed with the task.
+
+Your response should include:
+
+1. information_so_far: str
+   - A markdown-formatted summary of all relevant information gathered
+   - Combine information from multiple messages into a cohesive response
+   - Format as if it was a single user message providing all details at once
+   - Include only factual information, not conversation back-and-forth
+
+2. move_on: bool
+   - True if we have all necessary information to proceed
+   - False if we still need more information
+
+3. next_assistant_task: str
+   - Should contain ANY request from the user that requires a response, including:
+     * Follow-up questions ("Can you explain that?", "Tell me more about...")
+     * Clarification requests ("What do you mean by...?")
+     * New or tangential topics ("By the way, what about...")
+     * Simple acknowledgments that need a response ("That's interesting!")
+   - Takes precedence over next_user_prompt
+   - Empty only if we need specific information from the user
+
+4. next_user_prompt: str
+   - Only if move_on is False AND next_assistant_task is empty
+   - A clear, specific question to get the missing information
+   - Should focus on one piece of information at a time
+
+Guidelines:
+- Any user message that expects a response should be treated as next_assistant_task
+- Don't ask for information that's already been provided
+- If information was provided unclearly, include your interpretation in information_so_far
+- If the user's request is unclear, use next_user_prompt to ask for clarification
+- Don't make assumptions about missing information - ask the user
+
+Examples of next_assistant_task:
+- "Tell me more about that"
+- "What do you mean?"
+- "That's interesting!"
+- "Can you explain X?"
+- "What about Y instead?"
+- "I see. And?"
+"""
+
 NAME_DIALOG = """
 The tool names are descriptive. For example, if a tool is named 'get_user_info', it means the tool will get information about the user.
 Throughout the conversation, you would have selected and used some tools to perform the task. If you had to encapsulate this whole flow in a single tool call, what would the function signature look like? With a verbose name and detailed docstring? In a JSON format.

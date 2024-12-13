@@ -179,6 +179,7 @@ async def save_dialog(
     if existing_dialog is None:
         existing_dialog = await DBDialog.filter(id=dialog.id).using_db(conn).first()
     if existing_dialog is None:
+        # logger.info(f"Creating dialog:\nName: {dialog_dict['name']}\nSignature: {dialog_tool_signature}")
         await DBDialog.create(using_db=conn, **dialog_dict)
     elif overwrite:
         existing_dialog = await existing_dialog.update_from_dict(
