@@ -1,0 +1,18 @@
+[
+    {
+        "name": "Recruitment Assistant",
+        "description": "An AI based solution to process resumes and job requirements at scale"
+    },
+    {
+        "name": "Interview Scheduler",
+        "description": "A tool to automate the scheduling of interviews with candidates"
+    },
+    {
+        "name": "Candidate Tracker",
+        "description": "A system to track candidates throughout the recruitment process"
+    },
+    {
+        "name": "Job Posting Manager",
+        "description": "A platform to manage and distribute job postings across various channels"
+    }
+]

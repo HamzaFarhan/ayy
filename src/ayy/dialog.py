@@ -36,7 +36,7 @@ class ModelName(StrEnum):
     OPUS = "claude-3-opus-latest"
     GEMINI_PRO = "gemini-1.5-pro-001"
     GEMINI_FLASH = "gemini-1.5-flash-002"
-    GEMINI_FLASH_EXP = "gemini-1.5-flash-exp-0827"
+    GEMINI_FLASH_EXP = "gemini-2.0-flash-exp"
 
 
 class Tool(BaseModel):
