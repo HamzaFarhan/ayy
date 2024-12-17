@@ -491,7 +491,8 @@ async def new_task(
     task: Task | None = None,
     creator: Instructor | AsyncInstructor | None = None,
     available_tools: list[str] | set[str] | None = None,
-    recommended_tools: dict[int, str] | None = None,
+    recommended_tools: dict[int, str] | list[str] | None = None,
+    selected_tools: list[Tool] | None = None,
     continue_dialog: bool = CONTINUE_DIALOG,
     summarizer_dialog: Dialog | None = SUMMARIZER_DIALOG,
     tools_module: str = DEFAULT_TOOLS_MODULE,
@@ -510,8 +511,11 @@ async def new_task(
     tool_names = []
     tools_list = []
     available_tools = set(dialog.available_tools or available_tools or [])
+    selected_tools = selected_tools or []
     for _, func in get_functions_from_module(module=tools):
-        if not available_tools or func.__name__ in available_tools | PINNED_TOOLS:
+        if not available_tools or func.__name__ in available_tools | PINNED_TOOLS | set(
+            tool.name for tool in selected_tools
+        ):
             tool_names.append(func.__name__)
             tools_list.append(f"Tool:\n{get_function_info(func)}")
     tools_info = "\n\n".join(tools_list + dialogs_as_tools)
@@ -534,7 +538,9 @@ async def new_task(
     await save_dialog(dialog=dialog, db_name=db_name)
     await save_task(task=task, db_name=db_name)
     await add_task_tools(
-        task=task, tools=[Tool(reasoning="", name="get_selected_tools", prompt=task_query)], db_name=db_name
+        task=task,
+        tools=selected_tools or [Tool(reasoning="", name="get_selected_tools", prompt=task_query)],
+        db_name=db_name,
     )
     return await run_tools(
         db_name=db_name,
