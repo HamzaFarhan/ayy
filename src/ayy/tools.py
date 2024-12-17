@@ -29,6 +29,8 @@ def get_weather(
         return "It's sunny"
     elif day == "Wednesday" and location.lower() == "manchester":
         return "It's cloudy"
+    elif day == "Thursday" and location.lower() == "newyork":
+        return "It's snowing"
     else:
         return "It's overcast"
 
