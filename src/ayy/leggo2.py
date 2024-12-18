@@ -8,22 +8,17 @@ from instructor import AsyncInstructor, Instructor
 from loguru import logger
 from pydantic import UUID4, BaseModel, Field, create_model
 
-from ayy.dialog import (
-    Dialog,
-    DialogToolSignature,
-    MessagePurpose,
+from ayy.agent import (
+    Agent,
+    AgentToolSignature,
     ModelName,
-    Task,
-    TaskTool,
-    Tool,
-    add_dialog_message,
-    add_task_message,
     assistant_message,
     create_creator,
-    dialog_to_kwargs,
+    agent_to_kwargs,
     get_last_message,
-    user_message,
+    user_message
 )
+from ayy.task import Task, TaskTool, Tool
 from ayy.dialogs import DIALOG_NAMER_DIALOG, SUMMARIZER_DIALOG
 from ayy.func_utils import function_to_type, get_function_info, get_functions_from_module
 from ayy.prompts import MOVE_ON

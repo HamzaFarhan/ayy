@@ -169,6 +169,7 @@ class DialogToolSignature(BaseModel):
     system: str = ""
 
 
+
 class Dialog(BaseModel):
     id: UUID4 = Field(default_factory=lambda: uuid4())
     name: str = ""
