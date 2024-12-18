@@ -93,16 +93,28 @@ def task_to_kwargs(
         for message in task_tool_to_messages(task_tool)
         if task_tool.id not in task.summarized_task_tools
     ]
+    messages = (agent.summary.model_dump().get("messages", []) if agent.summary else []) + task_tools_messages
     trim_idx = get_trim_index(
-        messages=task_tools_messages,
-        max_message_tokens=agent.max_message_tokens or max_message_tokens or MAX_MESSAGE_TOKENS,
+        messages=messages,
+        max_message_tokens=max_message_tokens or agent.max_message_tokens or MAX_MESSAGE_TOKENS,
     )
     if trim_idx:
-        messages_to_summarize = task_to_messages(task) + task_tools_messages[:trim_idx]
+        messages_to_summarize = task_to_messages(task) + messages[:trim_idx]
         summary = summarize_messages(messages=messages_to_summarize, summarizer_agent=summarizer_agent)
-        agent.summary = agent.summary or summary
         if summary:
-            task.summarized_task_tools += [task_tool.id for task_tool in task_tools[:trim_idx]]
-    return agent_to_kwargs(
-        agent=agent, messages=task_to_messages(task) + task_tools_messages[trim_idx:], joiner=joiner
-    )
+            if not agent.summary:
+                agent.summary = summary
+            else:
+                agent.summary.messages.extend(summary.messages)
+                agent.summary.semantic_memories.extend(summary.semantic_memories)
+            task.summarized_task_tools = sorted(
+                set(
+                    task.summarized_task_tools
+                    + [
+                        message["task_tool_id"]
+                        for message in messages[:trim_idx]
+                        if message.get("task_tool_id", None) is not None
+                    ]
+                )
+            )
+    return agent_to_kwargs(agent=agent, messages=task_to_messages(task) + messages[trim_idx:], joiner=joiner)

@@ -21,7 +21,7 @@ from ayy.memory import Summary
 from ayy.prompts import SELECT_TOOLS
 from ayy.utils import flatten_list
 
-MAX_MESSAGE_TOKENS = 100_000
+MAX_MESSAGE_TOKENS = 75_000
 MERGE_JOINER = "\n\n--- Next Message ---\n\n"
 TEMPERATURE = 0.1
 MAX_TOKENS = 3000
@@ -166,11 +166,11 @@ class Agent(BaseModel):
         if self.max_message_tokens is not None:
             return self
         if "gpt" in self.model_name.lower():
-            self.max_message_tokens = 100_000
+            self.max_message_tokens = 75_000
         elif "claude" in self.model_name.lower():
-            self.max_message_tokens = 175_000
+            self.max_message_tokens = 100_000
         elif "gemini" in self.model_name.lower():
-            self.max_message_tokens = 800_000
+            self.max_message_tokens = 250_000
         return self
 
 

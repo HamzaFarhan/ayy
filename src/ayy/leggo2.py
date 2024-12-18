@@ -18,6 +18,7 @@ from ayy.agent import (
     get_last_message,
     user_message
 )
+from ayy.agents import SUMMARIZER_AGENT
 from ayy.task import Task, TaskTool, Tool
 from ayy.dialogs import DIALOG_NAMER_DIALOG, SUMMARIZER_DIALOG
 from ayy.func_utils import function_to_type, get_function_info, get_functions_from_module
@@ -500,7 +501,7 @@ async def run_tools(
 
 async def new_task(
     db_name: str,
-    dialog: UUID4 | str | Dialog,
+    agent: UUID4 | str | Agent,
     task_query: str,
     task_name: str = "",
     task: Task | None = None,
@@ -509,22 +510,21 @@ async def new_task(
     recommended_tools: dict[int, str] | list[str] | None = None,
     selected_tools: list[Tool] | None = None,
     continue_dialog: bool = CONTINUE_DIALOG,
-    summarizer_dialog: Dialog | None = SUMMARIZER_DIALOG,
+    summarizer_agent: Agent | None = SUMMARIZER_AGENT,
     tools_module: str = DEFAULT_TOOLS_MODULE,
-) -> tuple[Task, Dialog]:
-    dialog = await load_dialog(dialog=dialog, db_name=db_name)
-    task = task or Task(name=task_name, dialog_id=dialog.id)
+) -> tuple[Task, Agent]:
+    agent = await load_agent(agent=agent, db_name=db_name)
+    task = task or Task(name=task_name, dialog_id=agent.id)
     tools = import_module(tools_module)
-    dialogs = await get_dialogs_with_signatures(db_name=db_name)
-    dialog_names = []
-    dialogs_as_tools = []
-    for d in dialogs:
-        if d.name != dialog.name:
-            dialog_names.append(d.name)
-            dialogs_as_tools.append(f"Tool:\n{d.dialog_tool_signature}")
+    agents = await get_agents_with_signatures(db_name=db_name)
+    agent_names = []
+    agents_as_tools = []
+        if a.name != agent.name:
+            agent_names.append(a.name)
+            agents_as_tools.append(f"Tool:\n{a.agent_tool_signature.to_dict()}")
     tool_names = []
     tools_list = []
-    available_tools = set(available_tools or dialog.available_tools or [])
+    available_tools = set(available_tools or agent.available_tools or [])
     selected_tools = selected_tools or []
     for _, func in get_functions_from_module(module=tools):
         if not available_tools or func.__name__ in available_tools | PINNED_TOOLS | set(
@@ -532,25 +532,20 @@ async def new_task(
         ):
             tool_names.append(func.__name__)
             tools_list.append(f"Tool:\n{get_function_info(func)}")
-    tools_info = "\n\n".join(tools_list + dialogs_as_tools)
+    tools_info = "\n\n".join(tools_list + agents_as_tools)
 
     av_message = user_message(
         content=f"<available_tools_for_task>\n{tools_info}\n</available_tools_for_task>",
-        purpose=MessagePurpose.AVAILABLE_TOOLS,
     )
     task.available_tools_message = av_message
-    # dialog = add_dialog_message(dialog=dialog, message=av_message, summarizer_dialog=summarizer_dialog)
     if recommended_tools is None:
         used_tools = await get_task_tools(task=task, db_name=db_name, used=True)
         recommended_tools = {tool.position: tool.tool.name for tool in used_tools}
     if recommended_tools:
         rec_message = user_message(
             content=f"<recommended_tools_for_task_in_order>\n{json.dumps(recommended_tools, indent=2)}\n</recommended_tools_for_task_in_order>",
-            purpose=MessagePurpose.RECOMMENDED_TOOLS,
         )
         task.recommended_tools_message = rec_message
-        # dialog = add_dialog_message(dialog=dialog, message=rec_message, summarizer_dialog=summarizer_dialog)
-    # await save_dialog(dialog=dialog, db_name=db_name)
     await save_task(task=task, db_name=db_name)
     await add_task_tools(
         task=task,
@@ -560,11 +555,11 @@ async def new_task(
     return await run_tools(
         db_name=db_name,
         task=task,
-        dialog=dialog,
+        agent=agent,
         creator=creator,
-        available_tools=set(tool_names) | set(dialog_names) | PINNED_TOOLS,
-        dialogs=set(dialog_names),
+        available_tools=set(tool_names) | set(agent_names) | PINNED_TOOLS,
+        agents=set(agent_names),
         continue_dialog=continue_dialog,
-        summarizer_dialog=summarizer_dialog,
+        summarizer_agent=summarizer_agent,
         tools_module=tools_module,
     )
