@@ -14,6 +14,7 @@ from ayy.dialog import (
     MessagePurpose,
     ModelName,
     Task,
+    TaskTool,
     Tool,
     add_dialog_message,
     add_task_message,
@@ -253,7 +254,7 @@ async def get_selected_tools(
     dialog = add_dialog_message(dialog=dialog, message=st_message)
     await save_dialog(dialog=dialog, db_name=db_name)
     await save_task(task=task, db_name=db_name)
-    await add_task_tools(task=task, tools=selected_tools, db_name=db_name)
+    await add_task_tools(task=task, tools=selected_tools, db_name=db_name)  # type: ignore
     return task, dialog
 
 
@@ -288,7 +289,7 @@ async def run_tool(
     db_name: str,
     task: UUID4 | str | Task,
     dialog: UUID4 | str | Dialog,
-    tool: Tool,
+    task_tool: TaskTool,
     tool_is_dialog: bool = False,
     creator: Instructor | AsyncInstructor | None = None,
     available_tools: list[str] | set[str] | None = None,
@@ -299,6 +300,7 @@ async def run_tool(
 ) -> tuple[Task, Dialog]:
     task = await load_task(task=task, db_name=db_name)
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
+    tool = task_tool.tool
     tools = import_module(tools_module)
     is_async = False
     if tool_is_dialog:
@@ -318,15 +320,15 @@ async def run_tool(
             is_async = inspect.iscoroutinefunction(selected_tool)
         except AttributeError:
             raise ValueError(f"Tool '{tool.name}' not found in tools module")
-    if tool.prompt:
-        logger.info(f"adding user message: {tool.prompt}")
-        message_purpose = MessagePurpose.CONVO if tool.name == "get_selected_tools" else MessagePurpose.TOOL
-        tp_message = user_message(content=tool.prompt, purpose=message_purpose)
-        if message_purpose != MessagePurpose.TOOL:
-            task = add_task_message(task=task, message=tp_message)
-        dialog = add_dialog_message(dialog=dialog, message=tp_message, summarizer_dialog=summarizer_dialog)
-        await save_dialog(dialog=dialog, db_name=db_name)
-        await save_task(task=task, db_name=db_name)
+    # if tool.prompt:
+    #     logger.info(f"adding user message: {tool.prompt}")
+    #     message_purpose = MessagePurpose.CONVO if tool.name == "get_selected_tools" else MessagePurpose.TOOL
+    #     tp_message = user_message(content=tool.prompt, purpose=message_purpose)
+    #     if message_purpose != MessagePurpose.TOOL:
+    #         task = add_task_message(task=task, message=tp_message)
+    #     dialog = add_dialog_message(dialog=dialog, message=tp_message, summarizer_dialog=summarizer_dialog)
+    #     await save_dialog(dialog=dialog, db_name=db_name)
+    #     await save_task(task=task, db_name=db_name)
     tool_type = (
         getattr(tools, "tool_types", globals().get("tool_types", {})).get(tool.name, None)
         if not tool_is_dialog
@@ -363,8 +365,10 @@ async def run_tool(
             cr_message = assistant_message(
                 content=f"Generated for {tool.name}: {tool_args}", purpose=MessagePurpose.TOOL
             )
-            dialog = add_dialog_message(dialog=dialog, message=cr_message, summarizer_dialog=summarizer_dialog)
-            await save_dialog(dialog=dialog, db_name=db_name)
+            task_tool.args_message = cr_message
+            await add_task_tools(task=task, tools=task_tool, db_name=db_name)
+            # dialog = add_dialog_message(dialog=dialog, message=cr_message, summarizer_dialog=summarizer_dialog)
+            # await save_dialog(dialog=dialog, db_name=db_name)
         except Exception:
             pass
     res = await _run_selected_tool(selected_tool=selected_tool, tool_args=tool_args, is_async=is_async)
@@ -380,8 +384,10 @@ async def run_tool(
     if res is not None:
         logger.info(f"adding assistant message: {res}")
         res_message = assistant_message(content=str(res), purpose=MessagePurpose.TOOL)
+        task_tool.result_message = res_message
+        await add_task_tools(task=task, tools=task_tool, db_name=db_name)
         # task = add_task_message(task=task, message=res_message)
-        dialog = add_dialog_message(dialog=dialog, message=res_message, summarizer_dialog=summarizer_dialog)
+        # dialog = add_dialog_message(dialog=dialog, message=res_message, summarizer_dialog=summarizer_dialog)
     await save_dialog(dialog=dialog, db_name=db_name)
     await save_task(task=task, db_name=db_name)
     return task, dialog
@@ -391,7 +397,7 @@ async def run_selected_tool(
     db_name: str,
     task: UUID4 | str | Task,
     dialog: UUID4 | str | Dialog,
-    tool: Tool,
+    task_tool: TaskTool,
     tool_is_dialog: bool = False,
     creator: Instructor | AsyncInstructor | None = None,
     available_tools: list[str] | set[str] | None = None,
@@ -401,16 +407,20 @@ async def run_selected_tool(
     task = await load_task(task=task, db_name=db_name)
     dialog = await load_dialog(dialog=dialog, db_name=db_name)
     creator = creator or create_creator(model_name=dialog.model_name)
-    if tool.name.lower() == "ask_user":
+    if task_tool.tool.name.lower() == "ask_user":
         task, dialog = await run_ask_user(
-            db_name=db_name, task=task, dialog=dialog, task_query=tool.prompt, summarizer_dialog=summarizer_dialog
+            db_name=db_name,
+            task=task,
+            dialog=dialog,
+            task_query=task_tool.tool.prompt,
+            summarizer_dialog=summarizer_dialog,
         )
-    elif tool.name.lower() == "call_ai":
+    elif task_tool.tool.name.lower() == "call_ai":
         task, dialog = await run_call_ai(
             db_name=db_name,
             task=task,
             dialog=dialog,
-            tool=tool,
+            tool=task_tool.tool,
             creator=creator,
             summarizer_dialog=summarizer_dialog,
         )
@@ -419,7 +429,7 @@ async def run_selected_tool(
             db_name=db_name,
             task=task,
             dialog=dialog,
-            tool=tool,
+            task_tool=task_tool,
             tool_is_dialog=tool_is_dialog,
             available_tools=available_tools,
             creator=creator,
@@ -456,7 +466,7 @@ async def run_tools(
                     task=task,
                     creator=creator,
                     dialog=dialog,
-                    tool=next_tool.tool,
+                    task_tool=next_tool,
                     tool_is_dialog=next_tool.tool.name in dialogs if dialogs else False,
                     available_tools=available_tools,
                     summarizer_dialog=summarizer_dialog,
@@ -511,7 +521,6 @@ async def new_task(
     task = task or Task(name=task_name, dialog_id=dialog.id)
     tools = import_module(tools_module)
     dialogs = await get_dialogs_with_signatures(db_name=db_name)
-
     dialog_names = []
     dialogs_as_tools = []
     for d in dialogs:
@@ -534,8 +543,8 @@ async def new_task(
         content=f"<available_tools_for_task>\n{tools_info}\n</available_tools_for_task>",
         purpose=MessagePurpose.AVAILABLE_TOOLS,
     )
-    # task = add_task_message(task=task, message=av_message)
-    dialog = add_dialog_message(dialog=dialog, message=av_message, summarizer_dialog=summarizer_dialog)
+    task.available_tools_message = av_message
+    # dialog = add_dialog_message(dialog=dialog, message=av_message, summarizer_dialog=summarizer_dialog)
     if recommended_tools is None:
         used_tools = await get_task_tools(task=task, db_name=db_name, used=True)
         recommended_tools = {tool.position: tool.tool.name for tool in used_tools}
@@ -544,13 +553,13 @@ async def new_task(
             content=f"<recommended_tools_for_task_in_order>\n{json.dumps(recommended_tools, indent=2)}\n</recommended_tools_for_task_in_order>",
             purpose=MessagePurpose.RECOMMENDED_TOOLS,
         )
-        # task = add_task_message(task=task, message=rec_message)
-        dialog = add_dialog_message(dialog=dialog, message=rec_message, summarizer_dialog=summarizer_dialog)
-    await save_dialog(dialog=dialog, db_name=db_name)
+        task.recommended_tools_message = rec_message
+        # dialog = add_dialog_message(dialog=dialog, message=rec_message, summarizer_dialog=summarizer_dialog)
+    # await save_dialog(dialog=dialog, db_name=db_name)
     await save_task(task=task, db_name=db_name)
     await add_task_tools(
         task=task,
-        tools=selected_tools or [Tool(reasoning="", name="get_selected_tools", prompt=task_query)],
+        tools=selected_tools or [Tool(reasoning="", name="get_selected_tools", prompt=task_query)],  # type: ignore
         db_name=db_name,
     )
     return await run_tools(

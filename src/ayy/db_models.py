@@ -40,8 +40,11 @@ class TaskTool(models.Model):
     reasoning = fields.TextField()
     name = fields.CharField(max_length=255)
     prompt = fields.TextField()
+    args_message = fields.JSONField(default=dict)
+    result_message = fields.JSONField(default=dict)
     used = fields.BooleanField(default=False)
-    timestamp = fields.DatetimeField(auto_now_add=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    used_at = fields.DatetimeField(null=True)
 
     class Meta:  # type: ignore
         app = DEFAULT_APP_NAME

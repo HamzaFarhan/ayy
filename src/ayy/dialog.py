@@ -79,9 +79,10 @@ MessageType = dict[str, Content]
 class MessagePurpose(StrEnum):
     SUMMARY = "summary"
     CONVO = "convo"
+    TOOL = "tool"
     AVAILABLE_TOOLS = "available_tools"
     RECOMMENDED_TOOLS = "recommended_tools"
-    TOOL = "tool"
+    SELECTED_TOOLS = "selected_tools"
     ERROR = "error"
 
 
@@ -111,7 +112,11 @@ def create_creator(model_name: ModelName = MODEL_NAME, use_async: bool = False) 
 
 
 def chat_message(
-    role: str, content: Content, template: Content = "", purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE
+    role: str,
+    content: Content,
+    template: Content = "",
+    purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE,
+    **kwargs,
 ) -> MessageType:
     if template:
         if not isinstance(content, dict):
@@ -122,25 +127,25 @@ def chat_message(
             raise KeyError(f"Template {template} requires key {e} which was not found in content.")
     else:
         message_content = content
-    return {"role": role, "content": message_content, "purpose": purpose}
+    return {"role": role, "content": message_content, "purpose": purpose, **kwargs}
 
 
 def system_message(
-    content: Content, template: Content = "", purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE
+    content: Content, template: Content = "", purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE, **kwargs
 ) -> MessageType:
-    return chat_message(role="system", content=content, template=template, purpose=purpose)
+    return chat_message(role="system", content=content, template=template, purpose=purpose, **kwargs)
 
 
 def user_message(
-    content: Content, template: Content = "", purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE
+    content: Content, template: Content = "", purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE, **kwargs
 ) -> MessageType:
-    return chat_message(role="user", content=content, template=template, purpose=purpose)
+    return chat_message(role="user", content=content, template=template, purpose=purpose, **kwargs)
 
 
 def assistant_message(
-    content: Content, template: Content = "", purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE
+    content: Content, template: Content = "", purpose: MessagePurpose = DEFAULT_MESSAGE_PURPOSE, **kwargs
 ) -> MessageType:
-    return chat_message(role="assistant", content=content, template=template, purpose=purpose)
+    return chat_message(role="assistant", content=content, template=template, purpose=purpose, **kwargs)
 
 
 def load_messages(messages: list[MessageType] | str | Path) -> list[MessageType]:
@@ -168,6 +173,7 @@ class Dialog(BaseModel):
     id: UUID4 = Field(default_factory=lambda: uuid4())
     name: str = ""
     system: Content = ""
+    summary: Summary | None = None
     messages: Messages = Field(default_factory=list)
     model_name: ModelName = MODEL_NAME
     creation_config: dict = dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
@@ -209,11 +215,19 @@ class Dialog(BaseModel):
         return self
 
 
+def dialog_to_messages(dialog: Dialog) -> Messages:
+    return [system_message(content=dialog.system)] + dialog.messages
+
+
 class Task(BaseModel):
     id: UUID4 = Field(default_factory=lambda: uuid4())
     name: str = ""
     dialog_id: UUID4
+    available_tools_message: MessageType = Field(default_factory=dict)
+    recommended_tools_message: MessageType = Field(default_factory=dict)
+    selected_tools_message: MessageType = Field(default_factory=dict)
     messages: Messages = Field(default_factory=list)
+    trim_idx: int = 0
 
 
 class TaskTool(BaseModel):
@@ -221,7 +235,35 @@ class TaskTool(BaseModel):
     position: int
     task_id: UUID4
     tool: Tool
+    args_message: MessageType = Field(default_factory=dict)
+    result_message: MessageType = Field(default_factory=dict)
     used: bool = False
+
+
+def task_to_messages(task: Task) -> Messages:
+    message_fields = [task.available_tools_message, task.recommended_tools_message, task.selected_tools_message]
+    return [msg for msg in message_fields if msg]
+
+
+def task_tool_to_messages(task_tool: TaskTool) -> Messages:
+    messages = []
+    if task_tool.tool.prompt:
+        messages.append(
+            user_message(
+                content=task_tool.tool.prompt,
+                purpose=MessagePurpose.CONVO
+                if task_tool.tool.name == "get_selected_tools"
+                else MessagePurpose.TOOL,
+                task_tool_id=task_tool.id,
+            )
+        )
+    if task_tool.args_message:
+        task_tool.args_message["task_tool_id"] = task_tool.id
+        messages.append(task_tool.args_message)
+    if task_tool.result_message:
+        task_tool.result_message["task_tool_id"] = task_tool.id
+        messages.append(task_tool.result_message)
+    return messages
 
 
 def get_last_message(messages: Messages, role: str = "assistant") -> MessageType | None:
@@ -300,21 +342,54 @@ def trim_messages(
     ]
 
 
-def messages_to_kwargs(
-    messages: Messages,
-    system: str = "",
-    model_name: str = MODEL_NAME,
+def get_trim_index(messages: Messages, max_message_tokens: int | None = MAX_MESSAGE_TOKENS) -> int:
+    if max_message_tokens is None or len(messages) == 0:
+        return 0
+    total_tokens = 0
+    trim_idx = len(messages) - 1
+    while trim_idx >= 0:
+        msg_tokens = count_tokens([messages[trim_idx]])
+        if total_tokens + msg_tokens > max_message_tokens:
+            break
+        total_tokens += msg_tokens
+        trim_idx -= 1
+    return trim_idx + 1
+
+
+def task_to_kwargs(
+    task: Task,
+    task_tools: list[TaskTool],
+    dialog: Dialog,
+    max_message_tokens: int | None = None,
     joiner: Content = MERGE_JOINER,
-    max_message_tokens: int = MAX_MESSAGE_TOKENS,
+) -> dict:
+    task_tools_messages = flatten_list([task_tool_to_messages(task_tool) for task_tool in task_tools])[
+        task.trim_idx :
+    ]
+    trim_idx = get_trim_index(
+        messages=task_tools_messages,
+        max_message_tokens=dialog.max_message_tokens or max_message_tokens or MAX_MESSAGE_TOKENS,
+    )
+    task.trim_idx = trim_idx
+    task_tools_messages = task_tools_messages[trim_idx:]
+    return dialog_to_kwargs(dialog=dialog, messages=task_to_messages(task) + task_tools_messages, joiner=joiner)
+
+
+def messages_to_kwargs(
+    messages: Messages, system: str = "", model_name: str = MODEL_NAME, joiner: Content = MERGE_JOINER
 ) -> dict:
     messages = deepcopy(messages)
-    messages, _ = trim_messages(messages=messages, max_message_tokens=max_message_tokens)
     kwargs = {"messages": [chat_message(role=message["role"], content=message["content"]) for message in messages]}
     if messages and messages[0]["role"] == "system":
         system = system or messages[0]["content"]
         kwargs["messages"][0]["content"] = system
     else:
         kwargs["messages"].insert(0, system_message(content=system))
+    if len(kwargs["messages"]) > 1 and kwargs["messages"][1]["role"] == "assistant":
+        kwargs["messages"][1]["role"] = "user"
+        kwargs["messages"][1]["content"] = (
+            f"<previous_assistant_message>\n{kwargs['messages'][1]['content']}\n</previous_assistant_message>"
+        )
     if any(name in model_name.lower() for name in ("gemini", "claude")):
         kwargs["messages"] = merge_same_role_messages(messages=kwargs["messages"], joiner=joiner)
     if "claude" in model_name.lower():
@@ -322,13 +397,13 @@ def messages_to_kwargs(
     return kwargs
 
 
-def dialog_to_kwargs(dialog: Dialog, messages: Messages | None = None) -> dict:
+def dialog_to_kwargs(dialog: Dialog, messages: Messages | None = None, joiner: Content = MERGE_JOINER) -> dict:
     messages = messages or []
     kwargs = messages_to_kwargs(
         messages=dialog.messages + [message for message in messages if message["role"] != "system"],
         system=dialog.system,
         model_name=dialog.model_name,
-        max_message_tokens=dialog.max_message_tokens or MAX_MESSAGE_TOKENS,
+        joiner=joiner,
     )
     if "gemini" in dialog.model_name.lower():
         kwargs["generation_config"] = dialog.creation_config

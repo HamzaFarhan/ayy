@@ -1,3 +1,4 @@
+from datetime import datetime
 from importlib import import_module
 
 from loguru import logger
@@ -11,8 +12,19 @@ from ayy.db_models import DEFAULT_APP_NAME
 from ayy.db_models import Dialog as DBDialog
 from ayy.db_models import Task as DBTask
 from ayy.db_models import TaskTool as DBTaskTool
-from ayy.dialog import Dialog, DialogToolSignature, Task, TaskTool, Tool
+from ayy.dialog import (
+    Dialog,
+    DialogToolSignature,
+    Messages,
+    MessageType,
+    Task,
+    TaskTool,
+    Tool,
+    task_to_messages,
+    task_tool_to_messages,
+)
 from ayy.func_utils import get_functions_from_module
+from ayy.utils import flatten_list
 
 DEFAULT_DB_NAME = "tasks_db"
 TOOL_FIELDS = ["reasoning", "name", "prompt"]
@@ -22,13 +34,10 @@ DEFAULT_TOOLS_MODULE = "ayy.tools"
 def db_task_tool_to_task_tool(db_task_tool: BaseModel | dict, tool_fields: list[str] = TOOL_FIELDS) -> TaskTool:
     if isinstance(db_task_tool, BaseModel):
         db_task_tool = db_task_tool.model_dump()
-    return TaskTool(
-        id=db_task_tool["id"],
-        position=db_task_tool["position"],
-        task_id=db_task_tool["task"]["id"],
-        tool=Tool(**{k: v for k, v in db_task_tool.items() if k in tool_fields}),
-        used=db_task_tool["used"],
-    )
+    db_task_tool["task_id"] = db_task_tool["task"]["id"]
+    db_task_tool["tool"] = Tool(**{k: v for k, v in db_task_tool.items() if k in tool_fields})
+    del db_task_tool["task"]
+    return TaskTool(**db_task_tool)
 
 
 async def init_db(db_names: list[str] | str = DEFAULT_DB_NAME, app_names: list[str] | str = DEFAULT_APP_NAME):
@@ -76,17 +85,24 @@ async def get_dialogs_with_signatures(db_name: str = DEFAULT_DB_NAME) -> list[Di
     return [Dialog(**dialog) for dialog in dialogs.model_dump()]
 
 
-async def get_task_tools(task: UUID4 | Task, db_name: str = DEFAULT_DB_NAME, used: bool = False) -> list[TaskTool]:
+async def get_task_tools(
+    task: UUID4 | Task, db_name: str = DEFAULT_DB_NAME, used: bool | None = False
+) -> list[TaskTool]:
     task_id = task.id if isinstance(task, Task) else task
-    task_tools = await pydantic_queryset_creator(DBTaskTool).from_queryset(
-        DBTaskTool.filter(task_id=task_id, used=used).order_by("position").using_db(connections.get(db_name))
-    )
+    if used is None:
+        task_tools = await pydantic_queryset_creator(DBTaskTool).from_queryset(
+            DBTaskTool.filter(task_id=task_id).order_by("position").using_db(connections.get(db_name))
+        )
+    else:
+        task_tools = await pydantic_queryset_creator(DBTaskTool).from_queryset(
+            DBTaskTool.filter(task_id=task_id, used=used).order_by("position").using_db(connections.get(db_name))
+        )
     return [db_task_tool_to_task_tool(db_task_tool=tool) for tool in task_tools.model_dump()]
 
 
 async def add_task_tools(
     task: UUID4 | Task,
-    tools: list[Tool] | Tool,
+    tools: list[Tool | TaskTool] | Tool | TaskTool,
     db_name: str = DEFAULT_DB_NAME,
     position: int | None = None,
     used: bool = False,
@@ -94,7 +110,7 @@ async def add_task_tools(
     replace_all: bool = False,
     tool_fields: list[str] = TOOL_FIELDS,
 ) -> None:
-    tools = [tools] if isinstance(tools, Tool) else tools
+    tools = [tools] if not isinstance(tools, list) else tools
     conn = connections.get(db_name)
     task_id = task.id if isinstance(task, Task) else task
     async with in_transaction():
@@ -122,15 +138,39 @@ async def add_task_tools(
                 else:
                     start_position = latest_position + 1
         for i, tool in enumerate(tools, start=start_position):
-            logger.info(f"tool: {tool}")
-            await DBTaskTool.create(
-                using_db=conn, task_id=task_id, position=i, used=used, **tool.model_dump(include=set(tool_fields))
-            )
+            if isinstance(tool, Tool):
+                await DBTaskTool.create(
+                    using_db=conn,
+                    task_id=task_id,
+                    position=i,
+                    used=used,
+                    **tool.model_dump(include=set(tool_fields)),
+                )
+            else:
+                task_tool_dump = tool.model_dump()
+                task_tool_dump.update(tool.tool.model_dump(include=set(tool_fields)))
+                existing_tool = await DBTaskTool.filter(id=tool.id).using_db(conn).first()
+                if existing_tool:
+                    await existing_tool.update_from_dict(task_tool_dump)
+                    await existing_tool.save()
+                else:
+                    await DBTaskTool.create(using_db=conn, **task_tool_dump)
 
 
 async def toggle_task_tool_usage(task_tool_id: int, db_name: str = DEFAULT_DB_NAME) -> None:
     tool = await DBTaskTool.get(id=task_tool_id, using_db=connections.get(db_name))
     tool.used = not tool.used
+    tool.used_at = datetime.now()
+    await tool.save()
+
+
+async def add_task_tool_result_message(
+    task_tool_id: int, result_message: MessageType, db_name: str = DEFAULT_DB_NAME
+) -> None:
+    tool = await DBTaskTool.get(id=task_tool_id, using_db=connections.get(db_name))
+    tool.result_message = result_message
+    tool.used = True
+    tool.used_at = datetime.now()
     await tool.save()
 
 
@@ -159,6 +199,21 @@ async def load_task(task: UUID4 | str | Task, db_name: str = DEFAULT_DB_NAME) ->
     return Task(**task_model.model_dump())
 
 
+async def get_task_tools_messages(
+    task: UUID4 | Task, db_name: str = DEFAULT_DB_NAME, used: bool | None = None
+) -> Messages:
+    task_tools = await get_task_tools(task=task, db_name=db_name, used=used)
+    return flatten_list([task_tool_to_messages(task_tool) for task_tool in task_tools])
+
+
+async def get_task_messages(
+    task: UUID4 | Task, db_name: str = DEFAULT_DB_NAME, used: bool | None = None
+) -> Messages:
+    task = await load_task(task=task, db_name=db_name)
+    task_tool_messages = await get_task_tools_messages(task=task, db_name=db_name, used=used)
+    return task_to_messages(task) + task_tool_messages
+
+
 async def save_dialog(
     dialog: Dialog,
     db_name: str = DEFAULT_DB_NAME,
@@ -167,7 +222,7 @@ async def save_dialog(
     overwrite: bool = True,
 ) -> None:
     conn = connections.get(db_name)
-    dialog_dict = dialog.model_dump()
+    dialog_dict = dialog.model_dump(exclude={"summary"})
     if dialog_tool_signature is not None:
         if dialog_tool_signature.name not in [
             f[0] for f in get_functions_from_module(import_module(tools_module))
