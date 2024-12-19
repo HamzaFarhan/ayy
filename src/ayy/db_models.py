@@ -1,11 +1,11 @@
 from tortoise import fields, models
 
-from ayy.dialog import MAX_MESSAGE_TOKENS, MAX_TOKENS, MODEL_NAME, TEMPERATURE
+from ayy.agent import MAX_MESSAGE_TOKENS, MAX_TOKENS, MODEL_NAME, TEMPERATURE
 
 DEFAULT_APP_NAME = "tasks"
 
 
-class Dialog(models.Model):
+class Agent(models.Model):
     id = fields.UUIDField(pk=True)
     name = fields.CharField(max_length=255, default="")
     system = fields.TextField(default="")
@@ -13,20 +13,26 @@ class Dialog(models.Model):
     model_name = fields.CharField(max_length=255, default=MODEL_NAME.value)
     max_message_tokens = fields.IntField(default=MAX_MESSAGE_TOKENS)
     creation_config = fields.JSONField(default=dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS))
-    dialog_tool_signature = fields.JSONField(default=dict)
     available_tools = fields.JSONField(default=list)
     include_tool_guidelines = fields.BooleanField(default=True)
+    summarized_tasks = fields.JSONField(default=list)
+    agent_tool_signature = fields.JSONField(default=dict)
 
     class Meta:  # type: ignore
         app = DEFAULT_APP_NAME
-        table = "dialog"
+        table = "agent"
 
 
 class Task(models.Model):
     id = fields.UUIDField(pk=True)
     name = fields.CharField(max_length=255, default="")
-    dialog = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Dialog", related_name="task")
-    messages = fields.JSONField(default=list)
+    agent = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Agent", related_name="task")
+    task_query = fields.TextField()
+    available_tools_message = fields.JSONField(default=dict)
+    recommended_tools_message = fields.JSONField(default=dict)
+    selected_tools_message = fields.JSONField(default=dict)
+    summary = fields.JSONField(default=dict)
+    summarized_task_tools = fields.JSONField(default=list)
 
     class Meta:  # type: ignore
         app = DEFAULT_APP_NAME
@@ -37,11 +43,9 @@ class TaskTool(models.Model):
     id = fields.IntField(pk=True)
     task = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Task", related_name="task_tool")
     position = fields.IntField()
-    reasoning = fields.TextField()
-    name = fields.CharField(max_length=255)
-    prompt = fields.TextField()
-    args_message = fields.JSONField(default=dict)
-    result_message = fields.JSONField(default=dict)
+    tool = fields.JSONField(default=dict)
+    tool_args_messages = fields.JSONField(default=list)
+    tool_result_messages = fields.JSONField(default=list)
     used = fields.BooleanField(default=False)
     created_at = fields.DatetimeField(auto_now_add=True)
     used_at = fields.DatetimeField(null=True)
@@ -60,7 +64,7 @@ class SemanticMemoryDB(models.Model):
     confidence = fields.FloatField(default=1.0)
     created_at = fields.DatetimeField(auto_now_add=True)
     updated_at = fields.DatetimeField(auto_now=True)
-    last_dialog = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Dialog", related_name="semantic_memory", null=True)
+    last_agent = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Agent", related_name="semantic_memory", null=True)
     last_task = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Task", related_name="semantic_memory", null=True)
 
     class Meta:  # type: ignore

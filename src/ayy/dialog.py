@@ -169,7 +169,6 @@ class DialogToolSignature(BaseModel):
     system: str = ""
 
 
-
 class Dialog(BaseModel):
     id: UUID4 = Field(default_factory=lambda: uuid4())
     name: str = ""
@@ -401,7 +400,7 @@ def messages_to_kwargs(
 def dialog_to_kwargs(dialog: Dialog, messages: Messages | None = None, joiner: Content = MERGE_JOINER) -> dict:
     messages = messages or []
     kwargs = messages_to_kwargs(
-        messages=dialog.messages + [message for message in messages if message["role"] != "system"],
+        messages=dialog.messages + [msg for msg in messages if msg["role"] != "system"],
         system=dialog.system,
         model_name=dialog.model_name,
         joiner=joiner,

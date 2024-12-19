@@ -1,6 +1,5 @@
 from datetime import datetime
 from importlib import import_module
-from typing import Any
 
 from loguru import logger
 from pydantic import UUID4, BaseModel
@@ -9,22 +8,35 @@ from tortoise.contrib.pydantic import pydantic_model_creator, pydantic_queryset_
 from tortoise.expressions import F
 from tortoise.transactions import in_transaction
 
-from ayy.agent import Agent, AgentToolSignature, Messages
 from ayy.db_models import DEFAULT_APP_NAME
-from ayy.db_models import Agent as DBAgent
+from ayy.db_models import Dialog as DBDialog
 from ayy.db_models import Task as DBTask
 from ayy.db_models import TaskTool as DBTaskTool
+from ayy.dialog import (
+    Dialog,
+    DialogToolSignature,
+    Messages,
+    MessageType,
+    Task,
+    TaskTool,
+    Tool,
+    task_to_messages,
+    task_tool_to_messages,
+)
 from ayy.func_utils import get_functions_from_module
-from ayy.task import Task, TaskTool, Tool, task_to_messages, task_tool_to_messages
+from ayy.utils import flatten_list
 
 DEFAULT_DB_NAME = "tasks_db"
+TOOL_FIELDS = ["reasoning", "name", "prompt"]
 DEFAULT_TOOLS_MODULE = "ayy.tools"
 
 
-def db_task_tool_to_task_tool(db_task_tool: BaseModel | dict) -> TaskTool:
+def db_task_tool_to_task_tool(db_task_tool: BaseModel | dict, tool_fields: list[str] = TOOL_FIELDS) -> TaskTool:
     if isinstance(db_task_tool, BaseModel):
         db_task_tool = db_task_tool.model_dump()
     db_task_tool["task_id"] = db_task_tool["task"]["id"]
+    db_task_tool["tool"] = Tool(**{k: v for k, v in db_task_tool.items() if k in tool_fields})
+    del db_task_tool["task"]
     return TaskTool(**db_task_tool)
 
 
@@ -66,26 +78,25 @@ async def get_next_task_tool(
     return db_task_tool_to_task_tool(db_task_tool=tool_model)
 
 
-async def get_agents_with_signatures(db_name: str = DEFAULT_DB_NAME) -> list[Agent]:
-    agents = await pydantic_queryset_creator(DBAgent).from_queryset(
-        DBAgent.filter(agent_tool_signature__not={}).using_db(connections.get(db_name))
+async def get_dialogs_with_signatures(db_name: str = DEFAULT_DB_NAME) -> list[Dialog]:
+    dialogs = await pydantic_queryset_creator(DBDialog).from_queryset(
+        DBDialog.filter(dialog_tool_signature__not={}).using_db(connections.get(db_name))
     )
-    return [Agent(**agent) for agent in agents.model_dump()]
+    return [Dialog(**dialog) for dialog in dialogs.model_dump()]
 
 
 async def get_task_tools(
-    task: UUID4 | Task, db_name: str = DEFAULT_DB_NAME, used: bool | None = False, max_position: int | None = None
+    task: UUID4 | Task, db_name: str = DEFAULT_DB_NAME, used: bool | None = False
 ) -> list[TaskTool]:
-    filter_kwargs: dict[str, Any] = {}
-    if used is not None:
-        filter_kwargs["used"] = used
-    if max_position is not None:
-        filter_kwargs["position__lte"] = max_position
-    task_tools = await pydantic_queryset_creator(DBTaskTool).from_queryset(
-        DBTaskTool.filter(task_id=task.id if isinstance(task, Task) else task, **filter_kwargs)
-        .order_by("position")
-        .using_db(connections.get(db_name))
-    )
+    task_id = task.id if isinstance(task, Task) else task
+    if used is None:
+        task_tools = await pydantic_queryset_creator(DBTaskTool).from_queryset(
+            DBTaskTool.filter(task_id=task_id).order_by("position").using_db(connections.get(db_name))
+        )
+    else:
+        task_tools = await pydantic_queryset_creator(DBTaskTool).from_queryset(
+            DBTaskTool.filter(task_id=task_id, used=used).order_by("position").using_db(connections.get(db_name))
+        )
     return [db_task_tool_to_task_tool(db_task_tool=tool) for tool in task_tools.model_dump()]
 
 
@@ -97,6 +108,7 @@ async def add_task_tools(
     used: bool = False,
     run_next: bool = False,
     replace_all: bool = False,
+    tool_fields: list[str] = TOOL_FIELDS,
 ) -> None:
     tools = [tools] if not isinstance(tools, list) else tools
     conn = connections.get(db_name)
@@ -132,15 +144,17 @@ async def add_task_tools(
                     task_id=task_id,
                     position=i,
                     used=used,
-                    tool=tool.model_dump(),
+                    **tool.model_dump(include=set(tool_fields)),
                 )
             else:
+                task_tool_dump = tool.model_dump()
+                task_tool_dump.update(tool.tool.model_dump(include=set(tool_fields)))
                 existing_tool = await DBTaskTool.filter(id=tool.id).using_db(conn).first()
                 if existing_tool:
-                    await existing_tool.update_from_dict(tool.model_dump())
+                    await existing_tool.update_from_dict(task_tool_dump)
                     await existing_tool.save()
                 else:
-                    await DBTaskTool.create(using_db=conn, **tool.model_dump())
+                    await DBTaskTool.create(using_db=conn, **task_tool_dump)
 
 
 async def toggle_task_tool_usage(task_tool_id: int, db_name: str = DEFAULT_DB_NAME) -> None:
@@ -150,19 +164,11 @@ async def toggle_task_tool_usage(task_tool_id: int, db_name: str = DEFAULT_DB_NA
     await tool.save()
 
 
-async def add_task_tool_args_messages(
-    task_tool_id: int, tool_args_messages: Messages, db_name: str = DEFAULT_DB_NAME
+async def add_task_tool_result_message(
+    task_tool_id: int, result_message: MessageType, db_name: str = DEFAULT_DB_NAME
 ) -> None:
     tool = await DBTaskTool.get(id=task_tool_id, using_db=connections.get(db_name))
-    tool.tool_args_messages += tool_args_messages
-    await tool.save()
-
-
-async def add_task_tool_result_messages(
-    task_tool_id: int, tool_result_messages: Messages, db_name: str = DEFAULT_DB_NAME
-) -> None:
-    tool = await DBTaskTool.get(id=task_tool_id, using_db=connections.get(db_name))
-    tool.tool_result_messages += tool_result_messages
+    tool.result_message = result_message
     tool.used = True
     tool.used_at = datetime.now()
     await tool.save()
@@ -197,59 +203,52 @@ async def get_task_tools_messages(
     task: UUID4 | Task, db_name: str = DEFAULT_DB_NAME, used: bool | None = None
 ) -> Messages:
     task_tools = await get_task_tools(task=task, db_name=db_name, used=used)
-    return [msg for task_tool in task_tools for msg in task_tool_to_messages(task_tool)]
+    return flatten_list([task_tool_to_messages(task_tool) for task_tool in task_tools])
 
 
 async def get_task_messages(
-    task: UUID4 | Task, db_name: str = DEFAULT_DB_NAME, used: bool | None = None, summarized: bool = False
+    task: UUID4 | Task, db_name: str = DEFAULT_DB_NAME, used: bool | None = None
 ) -> Messages:
     task = await load_task(task=task, db_name=db_name)
-    task_tools = await get_task_tools(task=task, db_name=db_name, used=used)
-    return task_to_messages(task=task, task_tools=task_tools, summarized=summarized)
+    task_tool_messages = await get_task_tools_messages(task=task, db_name=db_name, used=used)
+    return task_to_messages(task) + task_tool_messages
 
 
-async def save_agent(
-    agent: Agent,
+async def save_dialog(
+    dialog: Dialog,
     db_name: str = DEFAULT_DB_NAME,
-    agent_tool_signature: AgentToolSignature | None = None,
+    dialog_tool_signature: DialogToolSignature | None = None,
     tools_module: str = DEFAULT_TOOLS_MODULE,
     overwrite: bool = True,
 ) -> None:
     conn = connections.get(db_name)
-    agent_dict = agent.model_dump()
-    if agent_tool_signature is not None:
-        if agent_tool_signature.name not in [f[0] for f in get_functions_from_module(import_module(tools_module))]:
-            agent_dict["system"] = agent_tool_signature.system
-            agent_dict["name"] = agent_tool_signature.name
-            agent_dict["agent_tool_signature"] = agent_tool_signature.model_dump()
-    existing_agent = await DBAgent.filter(name=agent.name).using_db(conn).first() if agent.name != "" else None
-    if existing_agent is None:
-        existing_agent = await DBAgent.filter(id=agent.id).using_db(conn).first()
-    if existing_agent is None:
-        await DBAgent.create(using_db=conn, **agent_dict)
+    dialog_dict = dialog.model_dump(exclude={"summary"})
+    if dialog_tool_signature is not None:
+        if dialog_tool_signature.name not in [
+            f[0] for f in get_functions_from_module(import_module(tools_module))
+        ]:
+            dialog_dict["system"] = dialog_tool_signature.system
+            dialog_dict["name"] = dialog_tool_signature.name
+            dialog_dict["dialog_tool_signature"] = dialog_tool_signature.model_dump()
+    existing_dialog = await DBDialog.filter(name=dialog.name).using_db(conn).first() if dialog.name != "" else None
+    if existing_dialog is None:
+        existing_dialog = await DBDialog.filter(id=dialog.id).using_db(conn).first()
+    if existing_dialog is None:
+        # logger.info(f"Creating dialog:\nName: {dialog_dict['name']}\nSignature: {dialog_tool_signature}")
+        await DBDialog.create(using_db=conn, **dialog_dict)
     elif overwrite:
-        existing_agent = await existing_agent.update_from_dict(
-            {k: v for k, v in agent_dict.items() if k not in ["id", "agent_id"]}
+        existing_dialog = await existing_dialog.update_from_dict(
+            {k: v for k, v in dialog_dict.items() if k not in ["id", "dialog_id"]}
         )
-        await existing_agent.save()
+        await existing_dialog.save()
 
 
-async def load_agent(
-    agent: UUID4 | str | Agent, db_name: str = DEFAULT_DB_NAME, current_task_id: UUID4 | None = None
-) -> Agent:
-    if isinstance(agent, Agent):
-        return agent
+async def load_dialog(dialog: UUID4 | str | Dialog, db_name: str = DEFAULT_DB_NAME) -> Dialog:
+    if isinstance(dialog, Dialog):
+        return dialog
     conn = connections.get(db_name)
-    kwargs = {"name": agent} if isinstance(agent, str) else {"id": agent}
-    agent_obj, _ = await DBAgent.get_or_create(defaults=None, using_db=conn, **kwargs)
-    agent_model = pydantic_model_creator(DBAgent)
-    agent_model = await agent_model.from_tortoise_orm(agent_obj)
-    agent = Agent(**agent_model.model_dump())
-    filter_ids = [current_task_id] if current_task_id is not None else [] + agent.summarized_tasks
-    tasks = await DBTask.filter(agent_id=agent.id, id__not_in=filter_ids).using_db(conn).all()
-
-    for task in tasks:
-        task_messages = await get_task_messages(task=task.id, db_name=db_name, used=True, summarized=True)
-        agent.messages += task_messages
-
-    return agent
+    kwargs = {"name": dialog} if isinstance(dialog, str) else {"id": dialog}
+    dialog_obj, _ = await DBDialog.get_or_create(defaults=None, using_db=conn, **kwargs)
+    dialog_model = pydantic_model_creator(DBDialog)
+    dialog_model = await dialog_model.from_tortoise_orm(dialog_obj)
+    return Dialog(**dialog_model.model_dump())

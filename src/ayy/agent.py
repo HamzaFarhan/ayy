@@ -132,14 +132,14 @@ class Agent(BaseModel):
     id: UUID4 = Field(default_factory=lambda: uuid4())
     name: str = ""
     system: Content = ""
-    summary: Summary | None = None
     messages: Messages = Field(default_factory=list)
     model_name: ModelName = MODEL_NAME
     creation_config: dict = dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS)
     max_message_tokens: int | None = None
-    agent_tool_signature: AgentToolSignature | None = None
     available_tools: list[str] = Field(default_factory=list)
     include_tool_guidelines: bool = True
+    summarized_tasks: list[UUID4] = Field(default_factory=list)
+    agent_tool_signature: AgentToolSignature | None = None
 
     @model_validator(mode="after")
     def validate_signature(self) -> Self:
@@ -147,10 +147,14 @@ class Agent(BaseModel):
             return self
         self.name = self.agent_tool_signature.name.strip() or self.name
         self.system = self.agent_tool_signature.system.strip() or self.system
-        if self.include_tool_guidelines:
-            self.system += f"\n\n<tool_selection_guidelines>\n{SELECT_TOOLS}\n</tool_selection_guidelines>"
-        self.system = self.system.strip()
         return self
+
+    @field_validator("system")
+    @classmethod
+    def validate_system(cls, v: str) -> str:
+        if cls.include_tool_guidelines:
+            v += f"\n\n<tool_selection_guidelines>\n{SELECT_TOOLS}\n</tool_selection_guidelines>"
+        return v.strip()
 
     @field_validator("creation_config")
     @classmethod
@@ -173,9 +177,10 @@ class Agent(BaseModel):
             self.max_message_tokens = 250_000
         return self
 
-
-def agent_to_messages(agent: Agent) -> Messages:
-    return agent.messages + (agent.summary.model_dump().get("messages", []) if agent.summary else [])
+    @field_validator("summarized_tasks")
+    @classmethod
+    def validate_summarized_tasks(cls, v: list[int]) -> list[int]:
+        return sorted(set(v))
 
 
 def get_last_message(messages: Messages, role: str = "assistant") -> MessageType | None:
@@ -253,7 +258,7 @@ def messages_to_kwargs(
 def agent_to_kwargs(agent: Agent, messages: Messages | None = None, joiner: Content = MERGE_JOINER) -> dict:
     messages = messages or []
     kwargs = messages_to_kwargs(
-        messages=agent_to_messages(agent) + [message for message in messages if message["role"] != "system"],
+        messages=agent.messages + [msg for msg in messages if msg["role"] != "system"],
         system=agent.system,
         model_name=agent.model_name,
         joiner=joiner,
@@ -265,7 +270,9 @@ def agent_to_kwargs(agent: Agent, messages: Messages | None = None, joiner: Cont
     return kwargs
 
 
-def summarize_messages(messages: Messages, summarizer_agent: Agent | None = None) -> Summary | None:
+def summarize_messages(
+    messages: Messages, summarizer_agent: Agent | None = None, joiner: Content = MERGE_JOINER
+) -> Summary | None:
     if not messages or summarizer_agent is None:
         return None
     logger.info(f"Summarizing messages: {messages[-2:]}")
@@ -275,13 +282,10 @@ def summarize_messages(messages: Messages, summarizer_agent: Agent | None = None
             **agent_to_kwargs(
                 agent=summarizer_agent,
                 messages=messages + [user_message(content="Summarize the conversation so far.")],
+                joiner=joiner,
             ),
             response_model=Summary,  # type: ignore
         )
-        summary_message = user_message(
-            content=f"<summary_of_our_previous_conversation(s)>\n{summary.summary_str(semantic=False)}\n</summary_of_our_previous_conversation(s)>"
-        )
-        messages = [summary_message] + messages
         logger.success("Summarized messages")
         return summary
     except Exception:

@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -50,3 +50,7 @@ class Summary(BaseModel):
         if semantic:
             summ_str += f"\n<semantic_memories>\n{semantic_memories}\n</semantic_memories>"
         return summ_str
+
+
+def summary_to_messages(summary: Summary) -> list[dict[str, Any]]:
+    return summary.model_dump().get("messages", [])

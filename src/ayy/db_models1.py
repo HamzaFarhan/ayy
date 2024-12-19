@@ -1,11 +1,11 @@
 from tortoise import fields, models
 
-from ayy.agent import MAX_MESSAGE_TOKENS, MAX_TOKENS, MODEL_NAME, TEMPERATURE
+from ayy.dialog import MAX_MESSAGE_TOKENS, MAX_TOKENS, MODEL_NAME, TEMPERATURE
 
 DEFAULT_APP_NAME = "tasks"
 
 
-class Agent(models.Model):
+class Dialog(models.Model):
     id = fields.UUIDField(pk=True)
     name = fields.CharField(max_length=255, default="")
     system = fields.TextField(default="")
@@ -13,23 +13,20 @@ class Agent(models.Model):
     model_name = fields.CharField(max_length=255, default=MODEL_NAME.value)
     max_message_tokens = fields.IntField(default=MAX_MESSAGE_TOKENS)
     creation_config = fields.JSONField(default=dict(temperature=TEMPERATURE, max_tokens=MAX_TOKENS))
-    agent_tool_signature = fields.JSONField(default=dict)
+    dialog_tool_signature = fields.JSONField(default=dict)
     available_tools = fields.JSONField(default=list)
     include_tool_guidelines = fields.BooleanField(default=True)
 
     class Meta:  # type: ignore
         app = DEFAULT_APP_NAME
-        table = "agent"
+        table = "dialog"
 
 
 class Task(models.Model):
     id = fields.UUIDField(pk=True)
     name = fields.CharField(max_length=255, default="")
-    agent = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Agent", related_name="task")
-    available_tools_message = fields.JSONField(default=dict)
-    recommended_tools_message = fields.JSONField(default=dict)
-    selected_tools_message = fields.JSONField(default=dict)
-    summarized_task_tools = fields.JSONField(default=list)
+    dialog = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Dialog", related_name="task")
+    messages = fields.JSONField(default=list)
 
     class Meta:  # type: ignore
         app = DEFAULT_APP_NAME
@@ -43,8 +40,8 @@ class TaskTool(models.Model):
     reasoning = fields.TextField()
     name = fields.CharField(max_length=255)
     prompt = fields.TextField()
-    tool_args_message = fields.JSONField(default=dict)
-    tool_result_message = fields.JSONField(default=dict)
+    args_message = fields.JSONField(default=dict)
+    result_message = fields.JSONField(default=dict)
     used = fields.BooleanField(default=False)
     created_at = fields.DatetimeField(auto_now_add=True)
     used_at = fields.DatetimeField(null=True)
@@ -63,7 +60,7 @@ class SemanticMemoryDB(models.Model):
     confidence = fields.FloatField(default=1.0)
     created_at = fields.DatetimeField(auto_now_add=True)
     updated_at = fields.DatetimeField(auto_now=True)
-    last_agent = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Agent", related_name="semantic_memory", null=True)
+    last_dialog = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Dialog", related_name="semantic_memory", null=True)
     last_task = fields.ForeignKeyField(f"{DEFAULT_APP_NAME}.Task", related_name="semantic_memory", null=True)
 
     class Meta:  # type: ignore
