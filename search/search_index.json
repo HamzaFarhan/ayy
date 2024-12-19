@@ -1,0 +1,1 @@
+{"config":{"lang":["en"],"separator":"[\\s\\-]+","pipeline":["stopWordFilter"]},"docs":[{"location":"","title":"Installation","text":"<pre><code>$ pip install ayy\n</code></pre>"}]}
