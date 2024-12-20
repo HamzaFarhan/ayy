@@ -10,11 +10,11 @@ from ayy.agent import (
     Messages,
     MessageType,
     agent_to_kwargs,
+    chat_message,
     get_trim_index,
     summarize_messages,
     user_message,
 )
-from ayy.dialog import chat_message
 from ayy.memory import Summary, summary_to_messages
 
 
@@ -43,13 +43,6 @@ class Tool(BaseModel):
         description="An LLM will receive the messages so far and the tools calls and results up until now. This prompt will then be used to ask the LLM to generate arguments for the selected tool based on the tool's signature. If the tool doesn't have any parameters, then it doesn't need a prompt.",
     )
 
-    @field_validator("id")
-    @classmethod
-    def validate_id(cls, v: UUID4 | str) -> str:
-        if isinstance(v, str):
-            v = uuid4()
-        return str(v)
-
     def __str__(self) -> str:
         return f"Reasoning: {self.reasoning}\nName: {self.name}\nPrompt: {self.prompt}"
 
@@ -76,7 +69,7 @@ def task_to_messages(task: Task, task_tools: list[TaskTool] | None = None, summa
             for message in task_tool_to_messages(task_tool)
             if task_tool.id not in (task.summarized_task_tools if summarized else [])
         ]
-    return [{**msg, "task_id": task.id} for msg in messages]
+    return [{**msg, "task_id": str(task.id)} for msg in messages]
 
 
 def task_tool_to_messages(task_tool: TaskTool) -> Messages:

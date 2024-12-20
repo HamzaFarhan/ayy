@@ -155,6 +155,12 @@ async def add_task_tools(
 async def toggle_task_tool_usage(task_tool_id: int, db_name: str = DEFAULT_DB_NAME) -> None:
     tool = await DBTaskTool.get(id=task_tool_id, using_db=connections.get(db_name))
     tool.used = not tool.used
+    await tool.save()
+
+
+async def set_task_tool_used(task_tool_id: int, db_name: str = DEFAULT_DB_NAME) -> None:
+    tool = await DBTaskTool.get(id=task_tool_id, using_db=connections.get(db_name))
+    tool.used = True
     tool.used_at = datetime.now()
     await tool.save()
 
@@ -172,8 +178,8 @@ async def add_task_tool_result_messages(
 ) -> None:
     tool = await DBTaskTool.get(id=task_tool_id, using_db=connections.get(db_name))
     tool.tool_result_messages += tool_result_messages
-    tool.used = True
-    tool.used_at = datetime.now()
+    # tool.used = True
+    # tool.used_at = datetime.now()
     await tool.save()
 
 
@@ -199,7 +205,9 @@ async def load_task(task: UUID4 | str | Task, db_name: str = DEFAULT_DB_NAME) ->
     task_obj, _ = await DBTask.get_or_create(defaults=None, using_db=conn, **kwargs)
     task_model = pydantic_model_creator(DBTask)
     task_model = await task_model.from_tortoise_orm(task_obj)
-    return Task(**task_model.model_dump())
+    task_model_dump = task_model.model_dump()
+    task_model_dump["agent_id"] = task_model_dump["agent"]["id"]
+    return Task(**task_model_dump)
 
 
 async def get_task_tools_messages(
@@ -244,17 +252,30 @@ async def save_agent(
 
 
 async def load_agent(
-    agent: UUID4 | str | Agent, db_name: str = DEFAULT_DB_NAME, current_task_id: UUID4 | None = None
+    agent: UUID4 | str | Agent,
+    db_name: str = DEFAULT_DB_NAME,
+    current_task_id: UUID4 | None = None,
+    load_task_messages: bool = True,
 ) -> Agent:
-    if isinstance(agent, Agent):
-        return agent
     conn = connections.get(db_name)
-    kwargs = {"name": agent} if isinstance(agent, str) else {"id": agent}
-    agent_obj, _ = await DBAgent.get_or_create(defaults=None, using_db=conn, **kwargs)
+    kwargs = {}
+    defaults = None
+    if isinstance(agent, Agent):
+        kwargs["name"] = agent.name
+        defaults = agent.model_dump()
+    elif isinstance(agent, str):
+        kwargs["name"] = agent
+    else:
+        kwargs["id"] = agent
+    agent_obj, _ = await DBAgent.get_or_create(defaults=defaults, using_db=conn, **kwargs)
     agent_model = pydantic_model_creator(DBAgent)
     agent_model = await agent_model.from_tortoise_orm(agent_obj)
     agent = Agent(**agent_model.model_dump())
-    filter_ids = [current_task_id] if current_task_id is not None else [] + agent.summarized_tasks
+    if not load_task_messages:
+        return agent
+    filter_ids = [
+        task_id for task_id in agent.summarized_tasks if current_task_id is None or task_id != current_task_id
+    ]
     tasks = await DBTask.filter(agent_id=agent.id, id__not_in=filter_ids).using_db(conn).all()
 
     for task in tasks:

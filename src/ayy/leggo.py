@@ -12,13 +12,12 @@ from ayy.agent import (
     Agent,
     AgentToolSignature,
     ModelName,
-    agent_to_kwargs,
     assistant_message,
     create_creator,
     get_last_message,
     user_message,
 )
-from ayy.agents import AGENT_NAMER_AGENT, SUMMARIZER_AGENT
+from ayy.agents import AGENT_NAMER_AGENT
 from ayy.func_utils import function_to_type, get_function_info, get_functions_from_module
 from ayy.prompts import MOVE_ON
 from ayy.task import Task, TaskTool, Tool, task_to_kwargs
@@ -32,11 +31,12 @@ from ayy.torm import (
     get_task_messages,
     get_task_tools,
     load_agent,
-    load_task,
     save_agent,
     save_task,
+    set_task_tool_used,
 )
 
+SUMMARIZER_AGENT = None
 MODEL_NAME = ModelName.GEMINI_FLASH
 DEFAULT_TOOLS_MODULE = "ayy.tools"
 PINNED_TOOLS = set(["ask_user", "call_ai"])
@@ -61,7 +61,7 @@ class TaskQuery(BaseModel):
     task_query: str
 
 
-async def handle_creator_error(task: Task, db_name: str, error: Exception, tool_name: str = ""):
+async def handle_creator_error(db_name: str, task: Task, error: Exception, tool_name: str = ""):
     res = f"Whoops! Something went wrong. Here's the error:\n{error}"
     if tool_name:
         res = f"Whoops! Something went wrong in '{tool_name}'. Here's the error:\n{error}"
@@ -70,11 +70,14 @@ async def handle_creator_error(task: Task, db_name: str, error: Exception, tool_
     )
 
 
-def get_agent_signature(agent: Agent) -> AgentToolSignature | None:
-    namer = create_creator(model_name=AGENT_NAMER_AGENT.model_name)
+async def get_agent_tool_signature(
+    db_name: str, task: Task, agent_namer_agent: Agent = AGENT_NAMER_AGENT
+) -> AgentToolSignature | None:
+    namer = create_creator(model_name=agent_namer_agent.model_name)
     try:
+        task_tools = await get_task_tools(task=task, db_name=db_name, used=True)
         namer_res = namer.create(
-            **agent_to_kwargs(agent=AGENT_NAMER_AGENT, messages=agent.messages),
+            **task_to_kwargs(task=task, task_tools=task_tools, agent=agent_namer_agent),
             response_model=AgentToolSignature,
         )
         logger.info(f"agent signature: {namer_res}")
@@ -139,7 +142,7 @@ async def _continue_dialog(
             await add_task_tool_result_messages(
                 task_tool_id=ai_task_tool.id, tool_result_messages=[res_message], db_name=db_name
             )
-            await save_task(task=task, db_name=db_name)
+            # await save_task(task=task, db_name=db_name)
         seq += 1
 
 
@@ -156,16 +159,16 @@ async def _run_ask_user(db_name: str, task_tool: TaskTool) -> TaskTool:
 
 async def run_ask_user(
     db_name: str,
-    task: UUID4 | str | Task,
-    agent: UUID4 | str | Agent,
+    task: Task,
+    agent: Agent,
     task_tool: TaskTool,
     creator: Instructor | AsyncInstructor | None = None,
     available_tools: list[str] | set[str] | None = None,
     summarizer_agent: Agent | None = SUMMARIZER_AGENT,
     max_tangent_messages: int = 10,
 ) -> Task:
-    task = await load_task(task=task, db_name=db_name)
-    agent = await load_agent(agent=agent, db_name=db_name)
+    # task = await load_task(task=task, db_name=db_name)
+    # agent = await load_agent(agent=agent, db_name=db_name, current_task_id=task.id)
     creator = creator or create_creator(model_name=agent.model_name)
     move_on = MoveOn(information_so_far="", next_user_prompt=task_tool.tool.prompt)
     tangent_task = None
@@ -214,20 +217,20 @@ async def run_ask_user(
         await add_task_tool_result_messages(
             task_tool_id=task_tool.id, tool_result_messages=[info_message], db_name=db_name
         )
-    await save_task(task=task, db_name=db_name)
+    # await save_task(task=task, db_name=db_name)
     return task
 
 
 async def run_call_ai(
     db_name: str,
-    task: UUID4 | str | Task,
-    agent: UUID4 | str | Agent,
+    task: Task,
+    agent: Agent,
     task_tool: TaskTool,
     creator: Instructor | AsyncInstructor | None = None,
     summarizer_agent: Agent | None = SUMMARIZER_AGENT,
 ) -> Task:
-    task = await load_task(task=task, db_name=db_name)
-    agent = await load_agent(agent=agent, db_name=db_name)
+    # task = await load_task(task=task, db_name=db_name)
+    # agent = await load_agent(agent=agent, db_name=db_name, current_task_id=task.id)
     creator = creator or create_creator(model_name=agent.model_name)
     task_tool.tool.prompt = task_tool.tool.prompt or DEFAULT_PROMPT
     task_tools = await get_task_tools(task=task, db_name=db_name, used=None, max_position=task_tool.position)
@@ -242,25 +245,25 @@ async def run_call_ai(
     await add_task_tool_result_messages(
         task_tool_id=task_tool.id, tool_result_messages=[res_message], db_name=db_name
     )
-    await save_agent(agent=agent, db_name=db_name)
-    await save_task(task=task, db_name=db_name)
+    # await save_agent(agent=agent, db_name=db_name)
+    # await save_task(task=task, db_name=db_name)
     return task
 
 
-async def get_selected_tools(db_name: str, task: UUID4 | str | Task, selected_tools: list[Tool]) -> Task:
+async def get_selected_tools(db_name: str, task: Task, selected_tools: list[Tool]) -> Task:
     "Get and push a list of selected tools for the task"
-    task = await load_task(task=task, db_name=db_name)
+    # task = await load_task(task=task, db_name=db_name)
     tools_str = "\n".join([f"Tool {i}:\n{tool}" for i, tool in enumerate(selected_tools, start=1)])
     st_message = assistant_message(f"<selected_tools>\n{tools_str}\n</selected_tools>")
     task.selected_tools_message = st_message
-    await save_task(task=task, db_name=db_name)
+    # await save_task(task=task, db_name=db_name)
     await add_task_tools(task=task, tools=selected_tools, db_name=db_name)  # type: ignore
     return task
 
 
 async def run_agent_as_tool(
     db_name: str,
-    agent: UUID4 | str | Agent,
+    agent: Agent,
     available_tools: list[str] | set[str] | None,
     task_query: str,
     tools_module: str = DEFAULT_TOOLS_MODULE,
@@ -292,8 +295,8 @@ async def _run_selected_tool(selected_tool: Callable, tool_args: Any, is_async: 
 
 async def run_tool(
     db_name: str,
-    task: UUID4 | str | Task,
-    agent: UUID4 | str | Agent,
+    task: Task,
+    agent: Agent,
     task_tool: TaskTool,
     tool_is_agent: bool = False,
     creator: Instructor | AsyncInstructor | None = None,
@@ -303,14 +306,17 @@ async def run_tool(
     summarizer_agent: Agent | None = SUMMARIZER_AGENT,
     tools_module: str = DEFAULT_TOOLS_MODULE,
 ) -> Task:
-    task = await load_task(task=task, db_name=db_name)
-    agent = await load_agent(agent=agent, db_name=db_name)
+    # task = await load_task(task=task, db_name=db_name)
+    # agent = await load_agent(agent=agent, db_name=db_name, current_task_id=task.id)
     tool = task_tool.tool
     tools = import_module(tools_module)
     is_async = False
     if tool_is_agent:
         selected_tool = partial(
-            run_agent_as_tool, db_name, await load_agent(agent=tool.name, db_name=db_name), available_tools
+            run_agent_as_tool,
+            db_name,
+            await load_agent(agent=tool.name, db_name=db_name, current_task_id=task.id),
+            available_tools,
         )
         is_async = True
     else:
@@ -371,22 +377,22 @@ async def run_tool(
         res = get_last_message(messages=task_messages, role="assistant")
         if res is not None:
             res = res["content"]
-    if res is not None:
+    else:
         logger.info(f"adding assistant message: {res}")
         res_message = assistant_message(content=str(res))
         task_tool.tool_result_messages += [res_message]
         await add_task_tool_result_messages(
             task_tool_id=task_tool.id, tool_result_messages=[res_message], db_name=db_name
         )
-    await save_agent(agent=agent, db_name=db_name)
-    await save_task(task=task, db_name=db_name)
+    # await save_agent(agent=agent, db_name=db_name)
+    # await save_task(task=task, db_name=db_name)
     return task
 
 
 async def run_selected_tool(
     db_name: str,
-    task: UUID4 | str | Task,
-    agent: UUID4 | str | Agent,
+    task: Task,
+    agent: Agent,
     task_tool: TaskTool,
     tool_is_agent: bool = False,
     creator: Instructor | AsyncInstructor | None = None,
@@ -394,8 +400,8 @@ async def run_selected_tool(
     summarizer_agent: Agent | None = SUMMARIZER_AGENT,
     tools_module: str = DEFAULT_TOOLS_MODULE,
 ) -> Task:
-    task = await load_task(task=task, db_name=db_name)
-    agent = await load_agent(agent=agent, db_name=db_name)
+    # task = await load_task(task=task, db_name=db_name)
+    # agent = await load_agent(agent=agent, db_name=db_name, current_task_id=task.id)
     creator = creator or create_creator(model_name=agent.model_name)
     if task_tool.tool.name.lower() == "ask_user":
         task = await run_ask_user(
@@ -433,8 +439,8 @@ async def run_selected_tool(
 
 async def run_tools(
     db_name: str,
-    task: UUID4 | str | Task,
-    agent: UUID4 | str | Agent,
+    task: Task,
+    agent: Agent,
     creator: Instructor | AsyncInstructor | None = None,
     available_tools: list[str] | set[str] | None = None,
     agents: list[str] | set[str] | None = None,
@@ -442,8 +448,8 @@ async def run_tools(
     summarizer_agent: Agent | None = SUMMARIZER_AGENT,
     tools_module: str = DEFAULT_TOOLS_MODULE,
 ) -> Task:
-    task = await load_task(task=task, db_name=db_name)
-    agent = await load_agent(agent=agent, db_name=db_name)
+    # task = await load_task(task=task, db_name=db_name)
+    # agent = await load_agent(agent=agent, db_name=db_name, current_task_id=task.id)
     creator = creator or create_creator(model_name=agent.model_name)
     while True:
         next_tool = await get_next_task_tool(task=task, db_name=db_name)
@@ -464,12 +470,13 @@ async def run_tools(
                     summarizer_agent=summarizer_agent,
                     tools_module=tools_module,
                 )
-                # await toggle_task_tool_usage(task_tool_id=next_tool.id, db_name=db_name)
+                await set_task_tool_used(task_tool_id=next_tool.id, db_name=db_name)
                 break
             except Exception as e:
                 logger.exception(f"Error running tool '{next_tool.tool.name}'")
                 await handle_creator_error(task=task, db_name=db_name, error=e, tool_name=next_tool.tool.name)
                 attempts += 1
+            await save_task(task=task, db_name=db_name)
     used_tools = await get_task_tools(task=task, db_name=db_name, used=True)
     last_used_tool = used_tools[-1].tool if used_tools else DEFAULT_TOOL
     if continue_dialog:
@@ -484,8 +491,11 @@ async def run_tools(
             summarizer_agent=summarizer_agent,
         )
 
-    agent_signature = agent.agent_tool_signature or get_agent_signature(agent=agent)
-    await save_agent(agent=agent, db_name=db_name, agent_tool_signature=agent_signature)
+    created_agent_tool_signature = await get_agent_tool_signature(db_name=db_name, task=task)
+    agent_tool_signature = agent.agent_tool_signature or created_agent_tool_signature
+    if agent_tool_signature is not None:
+        agent.agent_tool_signature = agent_tool_signature
+        await save_agent(agent=agent, db_name=db_name, agent_tool_signature=agent_tool_signature)
     await save_task(task=task, db_name=db_name)
     return task
 
@@ -506,6 +516,7 @@ async def new_task(
 ) -> Task:
     agent = await load_agent(agent=agent, db_name=db_name)
     task = task or Task(name=task_name, agent_id=agent.id, task_query=task_query)
+    agent = await load_agent(agent=agent, db_name=db_name, current_task_id=task.id)
     tools = import_module(tools_module)
     agents = await get_agents_with_signatures(db_name=db_name)
     agent_names = []

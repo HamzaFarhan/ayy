@@ -1,8 +1,7 @@
 from loguru import logger
 from tortoise import run_async
 
-from ayy.dialog import Dialog, ModelName
-from ayy.dialogs import SUMMARIZER_DIALOG
+from ayy.agent import Agent, ModelName
 from ayy.leggo import new_task
 from ayy.torm import init_db
 
@@ -28,11 +27,10 @@ if __name__ == "__main__":
     run_async(
         new_task(
             db_name=DB_NAME,
-            dialog=Dialog(model_name=MODEL_NAME, name="exp", max_message_tokens=300),
+            agent=Agent(model_name=MODEL_NAME, name="exp"),
             task_query="list the grounds in london",
             # task_query="list the grounds in manchester and the weather there on tue",
             # task_query="weather on tuesday?",
-            summarizer_dialog=SUMMARIZER_DIALOG,
         )
     )
     logger.success("Task done")

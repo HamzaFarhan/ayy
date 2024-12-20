@@ -138,7 +138,7 @@ class Agent(BaseModel):
     max_message_tokens: int | None = None
     available_tools: list[str] = Field(default_factory=list)
     include_tool_guidelines: bool = True
-    summarized_tasks: list[UUID4] = Field(default_factory=list)
+    summarized_tasks: list[str] = Field(default_factory=list)
     agent_tool_signature: AgentToolSignature | None = None
 
     @model_validator(mode="after")
@@ -149,12 +149,12 @@ class Agent(BaseModel):
         self.system = self.agent_tool_signature.system.strip() or self.system
         return self
 
-    @field_validator("system")
-    @classmethod
-    def validate_system(cls, v: str) -> str:
-        if cls.include_tool_guidelines:
-            v += f"\n\n<tool_selection_guidelines>\n{SELECT_TOOLS}\n</tool_selection_guidelines>"
-        return v.strip()
+    @model_validator(mode="after")
+    def validate_system(self) -> Self:
+        if self.include_tool_guidelines:
+            self.system += f"\n\n<tool_selection_guidelines>\n{SELECT_TOOLS}\n</tool_selection_guidelines>"
+        self.system = self.system.strip()
+        return self
 
     @field_validator("creation_config")
     @classmethod
@@ -179,7 +179,7 @@ class Agent(BaseModel):
 
     @field_validator("summarized_tasks")
     @classmethod
-    def validate_summarized_tasks(cls, v: list[int]) -> list[int]:
+    def validate_summarized_tasks(cls, v: list[str]) -> list[str]:
         return sorted(set(v))
 
 
@@ -267,6 +267,7 @@ def agent_to_kwargs(agent: Agent, messages: Messages | None = None, joiner: Cont
         kwargs["generation_config"] = agent.creation_config
     else:
         kwargs.update(agent.creation_config)
+    logger.warning(f"kwargs: {kwargs}")
     return kwargs
 
 

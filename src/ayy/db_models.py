@@ -16,7 +16,7 @@ class Agent(models.Model):
     available_tools = fields.JSONField(default=list)
     include_tool_guidelines = fields.BooleanField(default=True)
     summarized_tasks = fields.JSONField(default=list)
-    agent_tool_signature = fields.JSONField(default=dict)
+    agent_tool_signature = fields.JSONField(default=dict, null=True)
 
     class Meta:  # type: ignore
         app = DEFAULT_APP_NAME
@@ -31,7 +31,7 @@ class Task(models.Model):
     available_tools_message = fields.JSONField(default=dict)
     recommended_tools_message = fields.JSONField(default=dict)
     selected_tools_message = fields.JSONField(default=dict)
-    summary = fields.JSONField(default=dict)
+    summary = fields.JSONField(default=dict, null=True)
     summarized_task_tools = fields.JSONField(default=list)
 
     class Meta:  # type: ignore
