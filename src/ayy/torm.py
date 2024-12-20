@@ -66,6 +66,15 @@ async def get_next_task_tool(
     return db_task_tool_to_task_tool(db_task_tool=tool_model)
 
 
+async def get_next_available_task_tool_id_and_position(
+    task: UUID4 | Task, db_name: str = DEFAULT_DB_NAME
+) -> tuple[int, int]:
+    task_id = task.id if isinstance(task, Task) else task
+    task_tools = DBTaskTool.filter(task_id=task_id).using_db(connections.get(db_name))
+    latest_tool = await task_tools.order_by("-id").first()
+    return 1 if latest_tool is None else latest_tool.id + 1, 1 if latest_tool is None else latest_tool.position + 1
+
+
 async def get_agents_with_signatures(db_name: str = DEFAULT_DB_NAME) -> list[Agent]:
     agents = await pydantic_queryset_creator(DBAgent).from_queryset(
         DBAgent.filter(agent_tool_signature__not={}).using_db(connections.get(db_name))

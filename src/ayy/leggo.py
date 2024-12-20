@@ -27,6 +27,7 @@ from ayy.torm import (
     add_task_tool_result_messages,
     add_task_tools,
     get_agents_with_signatures,
+    get_next_available_task_tool_id_and_position,
     get_next_task_tool,
     get_task_messages,
     get_task_tools,
@@ -86,42 +87,58 @@ def get_agent_signature(agent: Agent) -> AgentToolSignature | None:
 async def _continue_dialog(
     db_name: str,
     task: Task,
-    dialog: Dialog,
+    agent: Agent,
     seq: int,
     last_used_tool: Tool,
     creator: Instructor | AsyncInstructor,
     available_tools: list[str] | set[str] | None = None,
-    summarizer_dialog: Dialog | None = SUMMARIZER_DIALOG,
-) -> tuple[Task, Dialog]:
+    summarizer_agent: Agent | None = SUMMARIZER_AGENT,
+) -> Task:
     while True:
         if seq % 2 == 0 or last_used_tool.name == "call_ai":
             user_input = input("('q' or 'exit' or 'quit' to quit) > ")
             if user_input.lower().strip() in ["q", "exit", "quit"]:
-                return task, dialog
-            task, dialog = await new_task(
+                return task
+            task = await new_task(
                 db_name=db_name,
-                dialog=dialog,
+                agent=agent,
                 task_query=user_input,
                 available_tools=available_tools,
                 continue_dialog=False,
-                summarizer_dialog=summarizer_dialog,
+                summarizer_agent=summarizer_agent,
             )
         else:
-            await add_task_tools(task=task, tools=DEFAULT_TOOL, db_name=db_name, used=True)
+            (
+                next_available_task_tool_id,
+                next_available_task_tool_position,
+            ) = await get_next_available_task_tool_id_and_position(task=task, db_name=db_name)
+            ai_task_tool = TaskTool(
+                id=next_available_task_tool_id,
+                task_id=task.id,
+                position=next_available_task_tool_position,
+                tool=DEFAULT_TOOL,
+            )
+            await add_task_tools(task=task, tools=[ai_task_tool], db_name=db_name, run_next=True)
             try:
-                res = creator.create(**dialog_to_kwargs(dialog=dialog), response_model=str)
+                task_tools = await get_task_tools(
+                    task=task, db_name=db_name, used=None, max_position=next_available_task_tool_position
+                )
+                res = creator.create(
+                    **task_to_kwargs(
+                        task=task, task_tools=task_tools, agent=agent, summarizer_agent=summarizer_agent
+                    ),
+                    response_model=str,
+                )
                 logger.success(f"ai response: {res}")
                 res_message = assistant_message(content=res)
             except Exception as e:
                 logger.exception("Error calling AI after continuing dialog")
-                res_message = assistant_message(
-                    content=f"Whoops! Something went wrong. Here's the error:\n{e}",
-                    purpose=MessagePurpose.ERROR,
-                )
+                res_message = assistant_message(content=f"Whoops! Something went wrong. Here's the error:\n{e}")
             logger.info(f"adding message: {res_message['content']}")
-            task = add_task_message(task=task, message=res_message)
-            dialog = add_dialog_message(dialog=dialog, message=res_message, summarizer_dialog=summarizer_dialog)
-            await save_dialog(dialog=dialog, db_name=db_name)
+            ai_task_tool.tool_result_messages += [res_message]
+            await add_task_tool_result_messages(
+                task_tool_id=ai_task_tool.id, tool_result_messages=[res_message], db_name=db_name
+            )
             await save_task(task=task, db_name=db_name)
         seq += 1
 
@@ -130,9 +147,9 @@ async def _run_ask_user(db_name: str, task_tool: TaskTool) -> TaskTool:
     task_query = task_tool.tool.prompt or DEFAULT_PROMPT
     res = input(f"{task_query}\n> ")
     tool_result_message = user_message(content=res)
-    task_tool.tool_result_message = tool_result_message
-    await add_task_tool_result_message(
-        task_tool_id=task_tool.id, tool_result_message=tool_result_message, db_name=db_name
+    task_tool.tool_result_messages += [tool_result_message]
+    await add_task_tool_result_messages(
+        task_tool_id=task_tool.id, tool_result_messages=[tool_result_message], db_name=db_name
     )
     return task_tool
 
@@ -456,7 +473,7 @@ async def run_tools(
     used_tools = await get_task_tools(task=task, db_name=db_name, used=True)
     last_used_tool = used_tools[-1].tool if used_tools else DEFAULT_TOOL
     if continue_dialog:
-        task, agent = await _continue_dialog(
+        task = await _continue_dialog(
             db_name=db_name,
             task=task,
             agent=agent,
@@ -467,15 +484,10 @@ async def run_tools(
             summarizer_agent=summarizer_agent,
         )
 
-    logger.success(f"Messages: {task.messages[-2:]}")
-    agent_signature = (
-        AgentToolSignature(**agent.agent_tool_signature)
-        if agent.agent_tool_signature
-        else get_agent_signature(agent=agent)
-    )
+    agent_signature = agent.agent_tool_signature or get_agent_signature(agent=agent)
     await save_agent(agent=agent, db_name=db_name, agent_tool_signature=agent_signature)
     await save_task(task=task, db_name=db_name)
-    return task, agent
+    return task
 
 
 async def new_task(
