@@ -1,6 +1,7 @@
 from datetime import datetime
 from importlib import import_module
 from typing import Any
+from uuid import UUID
 
 from loguru import logger
 from pydantic import UUID4, BaseModel
@@ -274,7 +275,9 @@ async def load_agent(
     if not load_task_messages:
         return agent
     filter_ids = [
-        task_id for task_id in agent.summarized_tasks if current_task_id is None or task_id != current_task_id
+        UUID(task_id)
+        for task_id in agent.summarized_tasks
+        if current_task_id is None or UUID(task_id) != current_task_id
     ]
     tasks = await DBTask.filter(agent_id=agent.id, id__not_in=filter_ids).using_db(conn).all()
 
